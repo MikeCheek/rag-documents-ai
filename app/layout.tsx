@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Newsreader, Inter, JetBrains_Mono } from "next/font/google";
+import { TopNav } from "@/components/TopNav";
 import "./globals.css";
 
 const newsreader = Newsreader({
@@ -37,7 +38,10 @@ export default function RootLayout({
         className="bg-ink-900 text-paper-200 font-sans antialiased"
         suppressHydrationWarning
       >
-        {children}
+        <div className="h-screen w-screen flex flex-col overflow-hidden">
+          <TopNav />
+          <div className="flex-1 min-h-0">{children}</div>
+        </div>
       </body>
     </html>
   );

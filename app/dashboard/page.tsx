@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import type { AppLimits, DashboardData } from "@/types";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { OpenRouterUsageCard, CohereUsageCard, LocalUsageCard } from "@/components/dashboard/UsageCard";
@@ -48,17 +48,10 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="min-h-screen bg-ink-900 text-paper-200">
+    <main className="h-full overflow-y-auto bg-ink-900 text-paper-200">
       <div className="max-w-[1100px] mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-1.5 text-sm text-paper-400 hover:text-paper-200 transition-colors mb-3"
-            >
-              <ArrowLeft size={14} />
-              Back to chat
-            </Link>
             <h1 className="font-serif italic text-3xl text-paper-100">The Ledger</h1>
             <p className="text-sm text-paper-400 mt-1">
               What&apos;s on the shelf, and how hard the free tiers are working.

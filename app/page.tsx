@@ -31,28 +31,6 @@ export default function Home() {
     ]).finally(() => setLoaded(true));
   }, []);
 
-  function handleDocumentUpdate(doc: DocumentRecord) {
-    setDocuments((prev) => {
-      const exists = prev.some((d) => d.id === doc.id);
-      if (exists) return prev.map((d) => (d.id === doc.id ? doc : d));
-      return [doc, ...prev];
-    });
-  }
-
-  async function handleDeleteDocument(id: string) {
-    setDocuments((prev) => prev.filter((d) => d.id !== id));
-    await fetch(`/api/documents/${id}`, { method: "DELETE" }).catch(() => {});
-  }
-
-  async function handleRenameDocument(id: string, name: string) {
-    setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, name } : d)));
-    await fetch(`/api/documents/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }).catch(() => {});
-  }
-
   function handleChatCreated(chat: ChatSummary) {
     setChats((prev) => [chat, ...prev.filter((c) => c.id !== chat.id)]);
     setActiveChatId(chat.id);
@@ -84,16 +62,12 @@ export default function Home() {
   }
 
   if (!loaded) {
-    return <div className="h-screen w-screen bg-ink-900" />;
+    return <div className="h-full w-full bg-ink-900" />;
   }
 
   return (
-    <main className="h-screen w-screen flex overflow-hidden">
+    <main className="h-full w-full flex overflow-hidden">
       <Sidebar
-        documents={documents}
-        onDocumentUpdate={handleDocumentUpdate}
-        onDeleteDocument={handleDeleteDocument}
-        onRenameDocument={handleRenameDocument}
         chats={chats}
         activeChatId={activeChatId}
         onSelectChat={setActiveChatId}

@@ -221,6 +221,13 @@ export function ChatView({
               <ArrowUp size={16} strokeWidth={2.5} />
             </button>
           </form>
+          <p className="max-w-[720px] mx-auto text-center text-[11px] text-paper-400 mt-2 leading-relaxed">
+            AI-generated — it can make mistakes, so check anything important.
+            This is a RAG assistant, not an autonomous agent: it retrieves
+            passages and answers fresh each turn rather than taking actions.
+            It remembers earlier messages within this chat, but not across
+            different chats.
+          </p>
         </div>
       </div>
 

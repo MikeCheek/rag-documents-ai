@@ -123,3 +123,20 @@ export type StoredChatMessage = {
   rerankMethod: RerankResultMethod | string | null;
   createdAt: string;
 };
+
+export type EmbeddingSpacePoint = {
+  chunkId: number;
+  documentId: string;
+  documentName: string;
+  content: string;
+  similarity: number;
+  isNeighbor: boolean;
+  x: number;
+  y: number;
+  z: number;
+};
+
+export type EmbeddingSpaceResult = {
+  query: { x: number; y: number; z: number };
+  points: EmbeddingSpacePoint[];
+};

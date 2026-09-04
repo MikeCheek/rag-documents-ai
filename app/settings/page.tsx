@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Check } from "lucide-react";
+import { Check } from "lucide-react";
 import type { AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -87,15 +86,8 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-ink-900 text-paper-200">
+    <main className="h-full overflow-y-auto bg-ink-900 text-paper-200">
       <div className="max-w-[720px] mx-auto px-6 py-8">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-paper-400 hover:text-paper-200 transition-colors mb-3"
-        >
-          <ArrowLeft size={14} />
-          Back to chat
-        </Link>
         <h1 className="font-serif italic text-3xl text-paper-100">The Method</h1>
         <p className="text-sm text-paper-400 mt-1 mb-8">
           How each question gets processed before it&apos;s answered — trade API calls

@@ -9,9 +9,14 @@ pipeline steps cost an API call.
 Built around the RAG pipeline you provided (Supabase/pgvector + local
 embeddings + Cohere rerank + LLM generation), wired into a full web app.
 
-This project was inspired by [this youtube tutorial about RAG](https://www.youtube.com/watch?v=cYRcdsqFAmY).
-
 ## Features
+
+### Navigation
+
+A top navbar (present on every page) links Chat, Shelf, Constellation,
+Settings, and the Ledger, with the usage dots always visible on the
+right. The left sidebar only shows on the Chat page and is reserved
+entirely for switching between conversations.
 
 ### 💬 Chat — "The Conversation"
 
@@ -38,14 +43,22 @@ This project was inspired by [this youtube tutorial about RAG](https://www.youtu
 
 ### 📚 Documents — "The Shelf"
 
-![Shelf interface, showing the documents panel open on the left](docs/screenshots/shelf.png)
+![The shelf, showing all the documents added to the database and adding new ones](docs/screenshots/shelf.png)
 
-- Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV). Each upload
-  streams live progress: reading → chunking → embedding → storing.
-- Status pills show processing / ready / failed per document, with a
-  passage count and extracted character count once ready.
-- **Rename** a document by double-clicking its name; **delete** it (and
-  all its chunks, cascaded) with the trash icon.
+Its own full page now (not a sidebar tab), with documents shown as tiles
+in a responsive grid rather than a list:
+
+- Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV) from the upload
+  zone at the top. Each upload streams live progress: reading → chunking
+  → embedding → storing.
+- Each tile shows a status badge (processing / ready / failed), passage
+  count and extracted character count once ready, file type, and upload
+  time.
+- **Filter** by name (search box), status, or file type (type filters
+  only appear once more than one type is present); **sort** by newest,
+  oldest, name, most passages, or most text.
+- **Rename** a document by double-clicking its name on the tile;
+  **delete** it (and all its chunks, cascaded) with the trash icon.
 
 ### 📊 Dashboard — "The Ledger"
 
@@ -61,10 +74,39 @@ This project was inspired by [this youtube tutorial about RAG](https://www.youtu
   document, with a bar showing how many times it's actually been pulled
   into an answer's context — useful for spotting documents nobody's
   questions ever touch.
-- Small colored dots next to the dashboard/settings links (visible from
-  the main chat screen too, not just here) give an at-a-glance usage
-  status: teal = fine, amber = getting close, red = near the limit, dim =
-  not configured.
+- Small colored dots in the top navbar (visible from every page, not just
+  here) give an at-a-glance usage status: teal = fine, amber = getting
+  close, red = near the limit, dim = not configured.
+
+### 🌌 Embedding space — "The Constellation"
+
+![The constellation, showing the chunks related to a prompt with embeddings plot into 3d space](docs/screenshots/constellation.png)
+
+Enter any word or phrase and see it mapped in 3D alongside the passages
+closest to it in embedding space, plus a handful of unrelated passages
+shown for scale/contrast. Lines connect the query to its nearest
+neighbors; hover or click a point for its excerpt and similarity score.
+Built with `three.js` / `@react-three/fiber`, with the 384-dimension
+embeddings projected down to 3D via UMAP (falls back to a simple radial
+layout if there are too few passages for UMAP's neighbor graph to be
+meaningful, e.g. right after your first upload).
+
+- **Color per document**: each document gets a maximally-distinct hue via
+  golden-angle stepping (the same spacing trick used for evenly splitting
+  a circle, e.g. sunflower seed heads) rather than a small fixed palette —
+  every document reads as clearly different even with a dozen-plus of
+  them, and every chunk of the same document always shares its color.
+  Colors are assigned in upload order and fetched once, so a document
+  keeps the same color across different searches.
+- **Results panel**: a collapsible overlay (top-right, click to expand or
+  collapse) lists every plotted passage sorted by similarity, with its
+  document's color dot and a percentage. Clicking a row pins that point's
+  tooltip open in the 3D view — and vice versa, clicking a point in the
+  scene highlights it in the list.
+
+This is a genuine map, not a canned animation: click a passage in the
+Sources panel after a chat answer, and note its similarity score — the
+same relationship is what positions it here.
 
 ### ⚙️ Settings — "The Method"
 
@@ -183,8 +225,8 @@ instance, but it isn't the supported path here.
 npm run dev
 ```
 
-Open http://localhost:3000. Upload a document from the sidebar ("The
-Shelf"), wait for it to say "ready", then ask a question in the chat.
+Open http://localhost:3000. Upload a document from "The Shelf" (top
+navbar), wait for it to say "ready", then ask a question in the chat.
 
 > The first upload will download the local embedding model (~90MB) — this
 > happens once and is cached on disk.
@@ -196,6 +238,8 @@ app/
   page.tsx                    # Main app shell (sidebar + chat)
   dashboard/page.tsx           # "The Ledger" — DB stats, API usage, passage usage grid
   settings/page.tsx            # "The Method" — query optimization & reranking modes
+  constellation/page.tsx       # "The Constellation" — 3D embedding-space map
+  shelf/page.tsx                # "The Shelf" — filterable/sortable document tile grid
   api/upload/route.ts          # Streams upload/embedding progress
   api/chat/route.ts            # Streams pipeline stages + answer tokens, persists messages
   api/chats/route.ts           # List chats
@@ -203,8 +247,9 @@ app/
   api/documents/route.ts       # List documents
   api/documents/[id]/route.ts  # Rename / delete a document
   api/dashboard/route.ts       # Aggregates stats for the dashboard
-  api/usage/route.ts           # Lightweight usage snapshot for the sidebar dots
+  api/usage/route.ts           # Lightweight usage snapshot for the navbar dots
   api/settings/route.ts        # Read / update limits + query/rerank modes
+  api/embedding-space/route.ts # Embeds a phrase, finds neighbors, projects to 3D
 lib/rag/
   embeddings.ts                # Local Xenova embeddings
   extract-text.ts              # PDF / DOCX / TXT extraction
@@ -219,11 +264,16 @@ lib/rag/
   chats.ts                     # Chat title derivation + context loading
   compaction.ts                # Folds old messages into a running summary
   settings.ts                  # Reads/writes limits + query/rerank mode settings
+  embedding-space.ts           # Nearest-neighbor search + UMAP projection to 3D
+lib/
+  constellation-colors.ts      # Golden-angle per-document color assignment
 db/
   schema.ts                    # Drizzle schema (documents, chunks, chats, chat_messages, api_calls, settings)
   migrations/                  # Raw SQL for the Supabase SQL editor
-components/                    # UI (sidebar, chat list, chat, sources panel, etc.)
+components/                    # UI (top navbar, sidebar, chat list, chat, sources panel, etc.)
 components/dashboard/          # Stat cards, editable usage meters, passage usage grid
+components/constellation/      # The three.js/@react-three/fiber 3D scene + collapsible results list
+components/shelf/              # Document tile grid
 docs/screenshots/              # Screenshots used in this README
 ```
 
@@ -251,6 +301,11 @@ docs/screenshots/              # Screenshots used in this README
 - A passage counts as "used" the moment it's included in the context sent
   to the LLM for an answer — regardless of whether that answer actually
   cites it inline.
+- The Constellation's 3D layout is recomputed fresh on every search — UMAP's
+  optimization has some randomness in its initialization, so re-mapping the
+  exact same phrase can shift the precise coordinates slightly between
+  runs. The relationships (what's near what) stay consistent; only the
+  camera-relative positions and rotation wander.
 - Compaction thresholds (24 messages before folding, keeping the most
   recent 8 verbatim) are constants in `lib/rag/compaction.ts` — the
   adjustable settings only cover query optimization, reranking, and API
