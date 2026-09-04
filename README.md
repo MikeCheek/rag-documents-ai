@@ -9,8 +9,7 @@ pipeline steps cost an API call.
 Built around the RAG pipeline you provided (Supabase/pgvector + local
 embeddings + Cohere rerank + LLM generation), wired into a full web app.
 
-This project was inspired by [this youtube tutorial about RAG](https://www.youtube.com/watch?v=cYRcdsqFAmY
-).
+This project was inspired by [this youtube tutorial about RAG](https://www.youtube.com/watch?v=cYRcdsqFAmY).
 
 ## Features
 
@@ -38,6 +37,8 @@ This project was inspired by [this youtube tutorial about RAG](https://www.youtu
   model's context is compacted.
 
 ### 📚 Documents — "The Shelf"
+
+![Shelf interface, showing the documents panel open on the left](docs/screenshots/shelf.png)
 
 - Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV). Each upload
   streams live progress: reading → chunking → embedding → storing.
@@ -99,14 +100,14 @@ Chat:    question -> optimize query -> vector search (Supabase)
 Every turn potentially touches up to four different services. Each has a
 free local alternative except the final answer itself:
 
-| Step | Options (set in Settings) | Cost |
-|---|---|---|
-| Embeddings (documents & every query) | always local | **Free** — runs locally via Xenova, in this Node process |
-| Retrieval (vector search) | always your own Postgres | **Free** — your Supabase database |
-| Query optimization | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call |
-| Reranking | Cohere / **Local BM25** / Off | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
-| Answer generation | always OpenRouter | 1 API call — this is the one you keep |
-| Compaction | automatic, occasional | 1 OpenRouter call, only once every ~24 messages in a chat |
+| Step                                 | Options (set in Settings)                    | Cost                                                                                                       |
+| ------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Embeddings (documents & every query) | always local                                 | **Free** — runs locally via Xenova, in this Node process                                                   |
+| Retrieval (vector search)            | always your own Postgres                     | **Free** — your Supabase database                                                                          |
+| Query optimization                   | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call                                                              |
+| Reranking                            | Cohere / **Local BM25** / Off                | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
+| Answer generation                    | always OpenRouter                            | 1 API call — this is the one you keep                                                                      |
+| Compaction                           | automatic, occasional                        | 1 OpenRouter call, only once every ~24 messages in a chat                                                  |
 
 With **Query optimization: Local** and **Reranking: Local BM25** (the
 defaults), a normal chat turn makes **exactly one API call** — the
@@ -266,3 +267,4 @@ docs/screenshots/              # Screenshots used in this README
   install it; moving it to a dedicated schema is possible but not done
   here, since it requires re-pointing the `vector` type in the schema and
   isn't a functional problem, just a lint preference.
+
