@@ -2,21 +2,18 @@
 
 A Next.js app that lets you upload documents (PDF, DOCX, TXT, MD, CSV) and
 ask questions about them in a chat interface, in either of two modes: plain
-RAG (retrieve, then answer) or an Agent mode that can call tools — document
+RAG (retrieve, then answer) or an Agent mode that can call tools, document
 search, web search, a calculator, persistent memory, and any custom API you
-add — in a loop before answering. Every answer is grounded and citable,
+add, in a loop before answering. Every answer is grounded and citable,
 every LLM call and every stage of producing it is timed and recorded, and
 you have full control over which pipeline steps cost an API call and which
 model runs them.
-
-Built around the RAG pipeline you provided (Supabase/pgvector + local
-embeddings + Cohere rerank + LLM generation), grown into a full web app.
 
 ## Features
 
 ### Navigation
 
-A top navbar (present on every page) links Chat, Shelf, Constellation,
+A top navbar links Chat, Shelf, Constellation,
 Settings, and the Ledger, with a RAG/Agent mode toggle and the usage rings
 always visible on the right. The left sidebar only shows on the Chat page
 and is reserved entirely for switching between conversations.
@@ -25,20 +22,19 @@ and is reserved entirely for switching between conversations.
 
 ![Chat interface, showing a streamed answer with inline numbered citations and a Sources panel open on the right](docs/screenshots/chat-conversation.png)
 
-- Ask questions in plain language; answers stream in token-by-token with
+- **Ask questions in plain language;** answers stream in token-by-token with
   inline citations like `[1]`, `[2]` — click one (or the source chip under
   the answer) to open the **Sources panel**, which shows the exact passage,
   its source document, and a relevance bar.
 - **Every answer shows how long it took and how many LLM calls that took.**
   A small badge row under each assistant message reads e.g. "Agent",
-  "3 LLM calls", "2.4s" as separate elements — deliberately just the
+  "3 LLM calls", "2.4s" as separate elements, deliberately just the
   total, not a full per-stage breakdown (that level of detail lives on the
-  Ledger's [Timing](#timing) charts instead). Persisted with the message,
-  so reopening a chat later shows the same numbers, not just at send time.
+  Ledger's [Timing](#timing) charts instead).
 - **Math, chemistry, and nuclear notation render properly** (via
   `remark-math` + `rehype-katex`/KaTeX) instead of showing raw LaTeX source
   — a model output like `\(^{4}_{3}\mathrm{Li}\)` renders as an actual
-  isotope symbol, not a string full of stray backslashes and braces. The
+  isotope symbol. The
   system prompt asks the model for `$...$`/`$$...$$` delimiters, and
   `\(...\)`/`\[...\]` are normalized to that automatically as a fallback,
   since plain CommonMark otherwise mangles raw LaTeX badly (it silently
@@ -56,9 +52,7 @@ and is reserved entirely for switching between conversations.
   ranking passages → writing the answer (RAG), or a live "Thinking" panel
   of tool calls as they happen (Agent).
 - **Multiple chats**, each with its own persisted history in Postgres —
-  switch between them from the "Chats" tab in the sidebar. Nothing bleeds
-  between chats; reload the page or come back tomorrow and they're all
-  still there.
+  switch between them from the "Chats" tab in the sidebar.
 - **Pin** chats you want to keep at the top, **rename** any chat by
   double-clicking its title, **delete** with a confirmation prompt.
 - **Compaction**: once a chat passes ~24 messages, everything except the
@@ -69,8 +63,10 @@ and is reserved entirely for switching between conversations.
 
 ### 📚 Documents — "The Shelf"
 
-Its own full page (not a sidebar tab), with documents shown as tiles in a
-responsive grid rather than a list:
+![Documents tab](docs/screenshots/shelf.png)
+
+A page with documents shown as tiles in a
+responsive grid:
 
 - Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV) from the upload
   zone at the top. Each upload streams live progress: reading → chunking →
@@ -84,29 +80,20 @@ responsive grid rather than a list:
 - **Rename** a document by double-clicking its name on the tile; **delete**
   it (and all its chunks, cascaded) with the trash icon.
 - **"Group similar"** clusters documents by how alike their content
-  actually is, not by any fixed category list — there's no taxonomy to
+  actually is — there's no taxonomy to
   classify into, only which documents read as similar to which others. Each
   document gets a centroid embedding (the elementwise mean of its chunks'
   embeddings, computed once when it finishes processing); pairwise
   similarity between every pair of centroids is computed in SQL with
   pgvector's cosine distance operator, then documents are grouped via
-  union-find using an **adaptive threshold** — pairs more than one
+  union-find using an **adaptive threshold**: pairs more than one
   standard deviation above this particular document set's own mean
-  similarity, not a fixed cosine number. A fixed threshold has an
-  all-or-nothing failure mode: centroid-averaging dilutes topic signal
-  across every chunk in a document, which compresses the whole similarity
-  range down, sometimes low enough that even genuinely related documents
-  never cross a fixed bar — so *everything* lands in "not similar to
-  others" instead of a sensible split. The adaptive version finds the
-  documents that stand out *relative to this batch*, whatever the absolute
-  numbers happen to be for a given embedding model and document mix. Group
-  labels are generated locally too — the top significant terms (via the
+  similarity, not a fixed cosine number. Group
+  labels are generated locally too: the top significant terms (via the
   same `wink-nlp` tokenizer/lemmatizer already used for local reranking)
-  across a sample of each group's content, not an LLM call — so grouping
-  costs nothing beyond embeddings you'd already have. Documents not
+  across a sample of each group's content. Documents not
   similar enough to anything else land in a "Not similar to others"
-  section rather than being forced
-  into a group.
+  section rather than being forced into a group.
 
 ### 📊 Dashboard — "The Ledger"
 
@@ -120,7 +107,7 @@ responsive grid rather than a list:
   to edit those limits directly if a provider changes theirs.
 - **Passage usage**: a searchable grid of every chunk across every
   document, with a bar showing how many times it's actually been pulled
-  into an answer's context — useful for spotting documents nobody's
+  into an answer's context: useful for spotting documents nobody's
   questions ever touch.
 - **Tool usage** (Agent mode): calls, success rate, and last-used time per
   tool, built-in or custom.
@@ -128,15 +115,15 @@ responsive grid rather than a list:
   daily-average trend line, and a bar breakdown of every measured stage —
   query optimization, retrieval, reranking, answer generation for RAG mode;
   each LLM round-trip and each individual tool call (`tool:search_documents`,
-  `tool:web_search`, etc.) for Agent mode — with average/min/max duration
+  `tool:web_search`, etc.) for Agent mode, with average/min/max duration
   and call count for each. Every one of those is a real, persisted
   measurement, not an estimate (see [Timing](#timing) below).
-- Small progress rings in the top navbar (visible from every page, not
-  just here) give an at-a-glance usage status per provider: teal = fine,
-  brass = getting close, rust = near the limit, dim = not configured — the
-  ring itself fills proportionally, not just a static color.
+- Small progress rings in the top navbar give an at-a-glance usage status per provider: teal = fine,
+  brass = getting close, rust = near the limit, dim = not configured.
 
 ### 🌌 Embedding space — "The Constellation"
+
+![Constellation of embeddings](docs/screenshots/constellation.png)
 
 Enter any word or phrase and see it mapped in 3D alongside the passages
 closest to it in embedding space, plus a handful of unrelated passages
@@ -149,26 +136,18 @@ right after your first upload).
 
 - **Color per document**: each document gets a maximally-distinct hue via
   golden-angle stepping (the same spacing trick used for evenly splitting a
-  circle, e.g. sunflower seed heads) rather than a small fixed palette —
-  every document reads as clearly different even with a dozen-plus of them,
-  and every chunk of the same document always shares its color. Colors are
+  circle, e.g. sunflower seed heads). Colors are
   assigned in upload order and fetched once, so a document keeps the same
   color across different searches.
 - **Results panel**: a collapsible overlay (top-right, click to expand or
   collapse) lists every plotted passage sorted by similarity, with its
   document's color dot and a percentage. Clicking a row pins that point's
-  tooltip open in the 3D view — and vice versa, clicking a point in the
-  scene highlights it in the list.
-
-This is a genuine map, not a canned animation: click a passage in the
-Sources panel after a chat answer, and note its similarity score — the same
-relationship is what positions it here.
+  tooltip open in the 3D view, and vice versa.
 
 ### ⚙️ Settings — "The Method"
 
-Organized into four tabs rather than one long scroll — General, Agent,
-Memory, and Danger zone — since the settings surface has grown enough
-across everything below that a flat page stopped being easy to scan.
+Organized into four tabs rather than one long scroll, General, Agent,
+Memory, and Danger zone.
 
 - **General**: the model (a searchable list of every current free
   OpenRouter model, each flagged with a green "Tools" badge if it supports
@@ -197,7 +176,9 @@ instead).
 
 ### 🤖 Agent mode
 
-A toggle in the top navbar (RAG / Agent) switches how the *next* message in
+![Agent execution example](docs/screenshots/agent.png)
+
+A toggle in the top navbar (RAG / Agent) switches how the _next_ message in
 any chat gets answered. Nothing is locked per chat — mode is tracked **per
 message**, not per chat, so a single conversation can freely mix RAG turns
 and Agent turns; each assistant message shows a small badge saying which
@@ -209,7 +190,7 @@ one produced it.
   loop — before producing a final answer, instead of always retrieving
   automatically. Built-in tools:
   - `search_documents` — the same retrieval + rerank pipeline as RAG mode,
-    but now something the model *chooses* to call (and can call again with
+    but now something the model _chooses_ to call (and can call again with
     a refined query if the first search wasn't enough).
   - `list_documents` — what's uploaded and its status, so the model can
     check before searching.
@@ -234,7 +215,7 @@ one produced it.
     instruction ("always...", "never...", a fact about yourself worth
     keeping), it calls `remember` to actually save it, rather than just
     claiming it will. The full current memory list is included in the
-    system prompt on *every* Agent-mode turn, so the model always has it
+    system prompt on _every_ Agent-mode turn, so the model always has it
     without needing to explicitly look it up, and `forget` deletes an entry
     by id when it's asked to or something's gone stale. This is
     deliberately **global, not tied to any one chat** — it persists the way
@@ -248,7 +229,7 @@ one produced it.
     server". Requests are guarded against hitting private/internal network
     addresses (loopback, `10.x`, `172.16-31.x`, `192.168.x`, link-local/
     cloud-metadata ranges) — worth having even in a single-user self-hosted
-    app, since a tool call is initiated by the *model*, and content it
+    app, since a tool call is initiated by the _model_, and content it
     retrieves from a document could in principle try to prompt-inject it
     into calling a tool somewhere it shouldn't.
   - A **max tool calls per turn** limit (Settings, default 6) caps the
@@ -274,7 +255,7 @@ one produced it.
   appear under the message exactly like a RAG answer, because they're the
   same `sources` field and the same UI — Agent mode just populates it from
   tool calls instead of one fixed retrieval step.
-- **Cost tradeoff, stated plainly**: Agent mode uses *more* API calls per
+- **Cost tradeoff, stated plainly**: Agent mode uses _more_ API calls per
   turn than RAG mode, not fewer — each tool round trip is a real call to
   OpenRouter. This is the opposite direction from minimizing calls; it's a
   genuine tradeoff for the added capability, not a free upgrade. Every
@@ -321,7 +302,7 @@ part of producing that answer took — not just the total, the breakdown:
 All of it lands in a dedicated `stage_timings` table (not reused from
 `api_calls`, which tracks external-provider usage for rate-limit purposes,
 a different concern), referencing the chat and the specific message once
-that message exists — timing has to be collected *during* processing,
+that message exists — timing has to be collected _during_ processing,
 before there's a message row to attach it to, so it's gathered in memory
 via `lib/rag/timing.ts`'s `TimingCollector` and persisted as one batch
 right after the assistant message is inserted. A failure to persist timing
@@ -336,7 +317,7 @@ already built.
 ## Rate-limit-aware queuing
 
 Every outgoing call to OpenRouter or Cohere waits for a free slot under
-the configured per-minute cap *before* it's made, rather than firing
+the configured per-minute cap _before_ it's made, rather than firing
 immediately and finding out from a 429 that the limit was already hit.
 `lib/rag/rate-limiter.ts` is a small in-process sliding-window limiter —
 if a call would exceed the cap, it waits until the oldest call in the
@@ -397,14 +378,14 @@ This table describes **RAG mode**. Every turn potentially touches up to
 four different services, each with a free local alternative except the
 final answer itself:
 
-| Step | Options (set in Settings) | Cost |
-|---|---|---|
-| Embeddings (documents & every query) | always local | **Free** — runs locally via Xenova, in this Node process |
-| Retrieval (vector search) | always your own Postgres | **Free** — your Supabase database |
-| Query optimization | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call |
-| Reranking | Cohere / **Local BM25** / Off | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
-| Answer generation | always OpenRouter | 1 API call — this is the one you keep |
-| Compaction | automatic, occasional | 1 OpenRouter call, only once every ~24 messages in a chat |
+| Step                                 | Options (set in Settings)                    | Cost                                                                                                       |
+| ------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Embeddings (documents & every query) | always local                                 | **Free** — runs locally via Xenova, in this Node process                                                   |
+| Retrieval (vector search)            | always your own Postgres                     | **Free** — your Supabase database                                                                          |
+| Query optimization                   | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call                                                              |
+| Reranking                            | Cohere / **Local BM25** / Off                | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
+| Answer generation                    | always OpenRouter                            | 1 API call — this is the one you keep                                                                      |
+| Compaction                           | automatic, occasional                        | 1 OpenRouter call, only once every ~24 messages in a chat                                                  |
 
 With **Query optimization: Local** and **Reranking: Local BM25** (the
 defaults), a normal RAG-mode chat turn makes **exactly one API call** — the
@@ -634,7 +615,7 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
 - The SSRF guard on custom tools (`lib/agent/ssrf-guard.ts`) blocks
   loopback, private (`10.x`, `172.16-31.x`, `192.168.x`), and link-local/
   cloud-metadata address ranges, resolving hostnames via DNS first so a
-  domain that merely *points at* a private IP is caught too — but it can't
+  domain that merely _points at_ a private IP is caught too — but it can't
   stop a custom tool from calling a public API that itself does something
   undesirable with the data it's sent. Treat custom tools as extending
   trust to whatever they call. (Web search's SearXNG URL is exempt from
@@ -702,3 +683,4 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
   possible but not done here, since it requires re-pointing the `vector`
   type in the schema and isn't a functional problem, just a lint
   preference.
+
