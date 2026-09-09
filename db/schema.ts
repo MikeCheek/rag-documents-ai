@@ -82,14 +82,44 @@ export const chatMessagesTable = pgTable(
       .references(() => chatsTable.id, { onDelete: "cascade" }),
     role: text("role").notNull(), // "user" | "assistant"
     content: text("content").notNull(),
-    sources: jsonb("sources"), // Source[] | null, only set on assistant messages
-    rerankMethod: text("rerank_method"), // "cohere" | "bm25" | "vector" | null
+    mode: text("mode").notNull().default("rag"), // "rag" | "agent" — which pipeline produced/received this message
+    sources: jsonb("sources"), // Source[] | null — RAG mode only
+    rerankMethod: text("rerank_method"), // "cohere" | "bm25" | "vector" | null — RAG mode only
+    agentSteps: jsonb("agent_steps"), // AgentStep[] | null — agent mode only
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
     chatIdIndex: index("chat_messages_chat_id_index").on(table.chatId),
   })
 );
+
+// User-defined tools available in Agent mode. Deliberately HTTP-calling
+// rather than arbitrary code, so "create more tools" doesn't mean running
+// untrusted code server-side — the server just makes a bounded, guarded
+// HTTP request (see lib/agent/ssrf-guard.ts) and returns the response.
+export const agentToolsTable = pgTable("agent_tools", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull().unique(), // shown to the LLM as the function name; identifier-safe
+  description: text("description").notNull(),
+  method: text("method").notNull().default("GET"), // "GET" | "POST"
+  urlTemplate: text("url_template").notNull(), // e.g. https://api.example.com/search?q={query}
+  parameters: jsonb("parameters").notNull(), // ToolParameter[]
+  headers: jsonb("headers"), // Record<string,string> | null — static headers, e.g. an API key
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// One row per tool invocation (built-in or custom), so tool usage is
+// tracked the same way API usage already is.
+export const toolCallLogTable = pgTable("tool_call_log", {
+  id: serial("id").primaryKey(),
+  chatId: uuid("chat_id").references(() => chatsTable.id, { onDelete: "set null" }),
+  toolName: text("tool_name").notNull(),
+  success: boolean("success").notNull().default(true),
+  durationMs: integer("duration_ms"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
 
 // Singleton row (id = 1) holding the user-adjustable free-tier limits shown
 // and checked against on the dashboard.
@@ -101,6 +131,8 @@ export const settingsTable = pgTable("settings", {
   openrouterDailyCap: integer("openrouter_daily_cap").notNull().default(50),
   queryOptimization: text("query_optimization").notNull().default("local"), // "off" | "local" | "llm"
   rerankMethod: text("rerank_method").notNull().default("cohere"), // "cohere" | "bm25" | "off"
+  agentMaxSteps: integer("agent_max_steps").notNull().default(6),
+  openrouterModel: text("openrouter_model").notNull().default("openrouter/free"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -115,3 +147,7 @@ export type SelectChat = typeof chatsTable.$inferSelect;
 export type InsertChatMessage = typeof chatMessagesTable.$inferInsert;
 export type SelectChatMessage = typeof chatMessagesTable.$inferSelect;
 export type SelectSettings = typeof settingsTable.$inferSelect;
+export type InsertAgentTool = typeof agentToolsTable.$inferInsert;
+export type SelectAgentTool = typeof agentToolsTable.$inferSelect;
+export type InsertToolCallLog = typeof toolCallLogTable.$inferInsert;
+export type SelectToolCallLog = typeof toolCallLogTable.$inferSelect;

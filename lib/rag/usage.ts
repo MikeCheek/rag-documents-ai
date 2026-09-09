@@ -9,7 +9,7 @@ import { getSettings } from "./settings";
  */
 export async function logApiCall(
   provider: "openrouter" | "cohere" | "local",
-  purpose: "optimize_query" | "chat_completion" | "rerank" | "embedding" | "compaction",
+  purpose: "optimize_query" | "chat_completion" | "rerank" | "embedding" | "compaction" | "agent_step",
   options: { count?: number; tokensUsed?: number } = {}
 ) {
   try {

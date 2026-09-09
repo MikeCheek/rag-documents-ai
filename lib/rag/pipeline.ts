@@ -2,7 +2,7 @@ import { getOptimizedQuery } from "./optimize-query";
 import { localOptimizeQuery } from "./local-nlp";
 import { retrieveChunks } from "./retrieve";
 import { rankDocuments, type RankedChunk, type RerankResultMethod } from "./rerank";
-import { getSettings } from "./settings";
+import type { AppSettings } from "@/types";
 
 export type PipelineStage =
   | "optimizing"
@@ -20,14 +20,13 @@ export async function runRetrievalPipeline(
   query: string,
   history: { role: "user" | "assistant"; content: string }[],
   summary: string | null,
+  settings: AppSettings,
   onStage: (stage: PipelineStage, detail?: string) => void
 ): Promise<PipelineResult> {
-  const settings = await getSettings();
-
   onStage("optimizing", modeLabel(settings.queryOptimization));
   let optimizedQuery = query;
   if (settings.queryOptimization === "llm") {
-    optimizedQuery = await getOptimizedQuery(query, history, summary);
+    optimizedQuery = await getOptimizedQuery(query, history, summary, settings.openrouterModel);
   } else if (settings.queryOptimization === "local") {
     optimizedQuery = await localOptimizeQuery(query);
   }

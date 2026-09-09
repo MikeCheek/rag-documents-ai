@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { desc, eq, sql } from "drizzle-orm";
 import { getDb, documentsTable, chunksTable } from "@/db";
 import { getUsageSnapshot } from "@/lib/rag/usage";
+import { getToolUsage } from "@/lib/agent/tool-usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,6 +37,7 @@ export async function GET() {
       .limit(500);
 
     const { usage, limits, configured } = await getUsageSnapshot();
+    const toolUsage = await getToolUsage();
 
     return NextResponse.json({
       documents: docStats ?? {
@@ -50,6 +52,7 @@ export async function GET() {
       limits,
       configured,
       chunks,
+      toolUsage,
     });
   } catch (err: any) {
     return NextResponse.json(

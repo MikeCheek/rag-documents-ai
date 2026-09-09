@@ -1,5 +1,11 @@
 export type ChatRole = "user" | "assistant";
 
+// "rag": retrieve-then-answer, no autonomy beyond the fixed pipeline.
+// "agent": the model can call tools (possibly several times, in a loop)
+// before producing a final answer. Tracked per-message, not per-chat, so a
+// single conversation can freely mix both.
+export type ChatMode = "rag" | "agent";
+
 export type Source = {
   chunkId: number;
   documentId: string;
@@ -11,12 +17,19 @@ export type Source = {
 
 export type RerankResultMethod = "cohere" | "bm25" | "vector";
 
+export type AgentStep =
+  | { type: "message"; content: string }
+  | { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
+  | { type: "tool_result"; id: string; name: string; result: string; success: boolean; durationMs: number };
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
+  mode?: ChatMode;
   sources?: Source[];
   rerankMethod?: RerankResultMethod | string;
+  agentSteps?: AgentStep[];
   stage?: string;
   stageDetail?: string;
   isStreaming?: boolean;
@@ -60,6 +73,7 @@ export type AppLimits = {
   coherePerMinuteCap: number;
   openrouterPerMinuteCap: number;
   openrouterDailyCap: number;
+  agentMaxSteps: number;
 };
 
 // "off": send the question to the retriever as typed.
@@ -77,6 +91,7 @@ export type RerankMode = "cohere" | "bm25" | "off";
 export type AppSettings = AppLimits & {
   queryOptimization: QueryOptimizationMode;
   rerankMethod: RerankMode;
+  openrouterModel: string;
 };
 
 export type ProviderConfigured = {
@@ -104,6 +119,7 @@ export type DashboardData = UsageSnapshot & {
     totalChars: number;
   };
   chunks: ChunkUsageRow[];
+  toolUsage: ToolUsageRow[];
 };
 
 export type ChatSummary = {
@@ -119,9 +135,56 @@ export type StoredChatMessage = {
   chatId: string;
   role: ChatRole;
   content: string;
+  mode: ChatMode;
   sources: Source[] | null;
   rerankMethod: RerankResultMethod | string | null;
+  agentSteps: AgentStep[] | null;
   createdAt: string;
+};
+
+export type ToolParameter = {
+  name: string;
+  type: "string" | "number" | "boolean";
+  description: string;
+  required: boolean;
+};
+
+export type AgentToolRecord = {
+  id: string;
+  name: string;
+  description: string;
+  method: "GET" | "POST";
+  urlTemplate: string;
+  parameters: ToolParameter[];
+  headers: Record<string, string> | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BuiltinToolInfo = {
+  name: string;
+  description: string;
+};
+
+export type ToolUsageRow = {
+  toolName: string;
+  calls: number;
+  successRate: number;
+  lastUsed: string | null;
+};
+
+export type ModelToolCheck = {
+  modelId: string;
+  isAutoRouter: boolean;
+  supportsTools: boolean | null;
+  suggestions: string[];
+};
+
+export type FreeModelInfo = {
+  id: string;
+  name: string;
+  supportsTools: boolean;
 };
 
 export type EmbeddingSpacePoint = {

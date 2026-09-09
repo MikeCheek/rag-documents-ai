@@ -9,6 +9,7 @@ export const DEFAULT_LIMITS: AppLimits = {
   coherePerMinuteCap: 10,
   openrouterPerMinuteCap: 20,
   openrouterDailyCap: 50,
+  agentMaxSteps: 6,
 };
 
 const QUERY_OPTIMIZATION_MODES: QueryOptimizationMode[] = ["off", "local", "llm"];
@@ -24,6 +25,8 @@ export async function getSettings(): Promise<AppSettings> {
       coherePerMinuteCap: row.coherePerMinuteCap,
       openrouterPerMinuteCap: row.openrouterPerMinuteCap,
       openrouterDailyCap: row.openrouterDailyCap,
+      agentMaxSteps: row.agentMaxSteps,
+      openrouterModel: row.openrouterModel,
       queryOptimization: row.queryOptimization as QueryOptimizationMode,
       rerankMethod: row.rerankMethod as RerankMode,
     };
@@ -31,11 +34,15 @@ export async function getSettings(): Promise<AppSettings> {
 
   // First read: create the singleton row. Default reranking to Cohere only
   // if a key is actually configured, otherwise start on the free local
-  // option rather than a mode that would silently no-op every time.
+  // option rather than a mode that would silently no-op every time. The
+  // model seeds from OPENROUTER_MODEL if set, so an existing deployment's
+  // env-configured model carries over — after this it's DB-controlled via
+  // Settings, not the env var, which only matters for a first run.
   const seed: AppSettings = {
     ...DEFAULT_LIMITS,
     queryOptimization: "local",
     rerankMethod: process.env.COHERE_API_KEY ? "cohere" : "bm25",
+    openrouterModel: process.env.OPENROUTER_MODEL || "openrouter/free",
   };
 
   await db.insert(settingsTable).values({ id: 1, ...seed }).onConflictDoNothing();
@@ -49,6 +56,13 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
   }
   if (patch.rerankMethod && !RERANK_MODES.includes(patch.rerankMethod)) {
     throw new Error(`Invalid rerankMethod: ${patch.rerankMethod}`);
+  }
+  if (patch.openrouterModel !== undefined) {
+    const model = patch.openrouterModel.trim();
+    if (!model || model.length > 200) {
+      throw new Error("openrouterModel must be a non-empty model id (max 200 characters).");
+    }
+    patch.openrouterModel = model;
   }
 
   const db = getDb();

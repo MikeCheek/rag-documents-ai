@@ -31,8 +31,3 @@ export function getCohere(): CohereClient | null {
   _cohere = new CohereClient({ token });
   return _cohere;
 }
-
-// "openrouter/free" is OpenRouter's own auto-router: it picks a free
-// (:free) model per-request so you don't have to hardcode one that might
-// get rotated out. Override with a specific model id via OPENROUTER_MODEL.
-export const CHAT_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";

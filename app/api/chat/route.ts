@@ -1,12 +1,15 @@
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, chatsTable, chatMessagesTable } from "@/db";
-import { getOpenRouter, CHAT_MODEL } from "@/lib/rag/clients";
+import { getOpenRouter } from "@/lib/rag/clients";
 import { runRetrievalPipeline } from "@/lib/rag/pipeline";
+import { runAgentLoop } from "@/lib/agent/loop";
+import { getSettings } from "@/lib/rag/settings";
 import { createEventStream } from "@/lib/stream";
 import { incrementChunkUsage, logApiCall } from "@/lib/rag/usage";
 import { deriveTitle, loadChatContext } from "@/lib/rag/chats";
 import { maybeCompactChat } from "@/lib/rag/compaction";
+import type { ChatMode } from "@/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +22,8 @@ Rules:
 2. Cite every factual claim with the matching source number in square brackets, e.g. "The mitochondria produces ATP [2]." Cite inline, right after the claim.
 3. If multiple sources support a claim, cite all of them, e.g. [1][3].
 4. If the context does not contain enough information to answer, say so plainly and explain what's missing. Do not guess or invent facts.
-5. Write in clear, well-organized prose (short paragraphs or a list when helpful). Do not repeat the question back.`;
+5. Write in clear, well-organized prose (short paragraphs or a list when helpful). Do not repeat the question back.
+6. For math, chemistry, or nuclear notation, write LaTeX delimited with single dollar signs for inline (e.g. $E=mc^2$) and double dollar signs for standalone equations (e.g. $$...$$). Do not use \\( \\) or \\[ \\] delimiters.`;
 
 export async function POST(req: NextRequest) {
   const { stream, send, close } = createEventStream();
@@ -30,6 +34,7 @@ export async function POST(req: NextRequest) {
       const body = await req.json();
       const query: string = (body?.query ?? "").trim();
       chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
+      const mode: ChatMode = body?.mode === "agent" ? "agent" : "rag";
 
       if (!query) {
         send({ type: "error", message: "Empty question." });
@@ -59,17 +64,58 @@ export async function POST(req: NextRequest) {
 
       const activeChatId: string = chatId;
       const { history, summary } = await loadChatContext(activeChatId);
+      const settings = await getSettings();
 
       await db.insert(chatMessagesTable).values({
         chatId: activeChatId,
         role: "user",
         content: query,
+        mode,
       });
 
+      // ---------------------------------------------------------------
+      // Agent mode: the model can call tools (possibly several times) in
+      // a loop before producing a final answer. See lib/agent/loop.ts.
+      // ---------------------------------------------------------------
+      if (mode === "agent") {
+        const { finalContent, steps } = await runAgentLoop(
+          query,
+          history,
+          summary,
+          activeChatId,
+          settings,
+          {
+            onStage: (stage, detail) => send({ type: "stage", stage, detail }),
+            onStep: (step) => send({ type: "agent_step", step }),
+            onToken: (content) => send({ type: "token", content }),
+          }
+        );
+
+        await db.insert(chatMessagesTable).values({
+          chatId: activeChatId,
+          role: "assistant",
+          content: finalContent,
+          mode: "agent",
+          agentSteps: steps.length ? steps : null,
+        });
+        await db
+          .update(chatsTable)
+          .set({ updatedAt: new Date() })
+          .where(eq(chatsTable.id, activeChatId));
+
+        send({ type: "done" });
+        maybeCompactChat(activeChatId);
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // RAG mode: fixed retrieve-then-answer pipeline.
+      // ---------------------------------------------------------------
       const { sources, rerankMethod } = await runRetrievalPipeline(
         query,
         history,
         summary,
+        settings,
         (stage, detail) => send({ type: "stage", stage, detail })
       );
 
@@ -93,7 +139,7 @@ export async function POST(req: NextRequest) {
 
         const openrouter = getOpenRouter();
         const completion = await openrouter.chat.completions.create({
-          model: CHAT_MODEL,
+          model: settings.openrouterModel,
           stream: true,
           stream_options: { include_usage: true },
           temperature: 0.3,
@@ -124,6 +170,7 @@ export async function POST(req: NextRequest) {
         chatId: activeChatId,
         role: "assistant",
         content: answer,
+        mode: "rag",
         sources: sources.length ? sources : null,
         rerankMethod,
       });

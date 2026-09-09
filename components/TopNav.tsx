@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MessageSquare, LayoutGrid, Orbit, SlidersHorizontal, LayoutDashboard } from "lucide-react";
 import { UsageDots } from "./UsageDots";
+import { ModeToggle } from "./ModeToggle";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -49,7 +50,8 @@ export function TopNav() {
         </nav>
       </div>
 
-      <div className="shrink-0 pl-3">
+      <div className="flex items-center gap-3 shrink-0 pl-3">
+        <ModeToggle />
         <UsageDots />
       </div>
     </header>

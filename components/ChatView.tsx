@@ -2,8 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, BookOpen } from "lucide-react";
-import type { ChatMessage, ChatSummary, DocumentRecord, Source, StoredChatMessage } from "@/types";
+import type {
+  AgentStep,
+  ChatMessage,
+  ChatSummary,
+  DocumentRecord,
+  Source,
+  StoredChatMessage,
+} from "@/types";
 import { uid } from "@/lib/utils";
+import { useMode } from "./ModeProvider";
+import { AgentModelWarning } from "./AgentModelWarning";
 import { MessageBubble } from "./MessageBubble";
 import { SourcesDrawer } from "./SourcesDrawer";
 
@@ -24,6 +33,7 @@ export function ChatView({
   onChatCreated: (chat: ChatSummary) => void;
   onChatTouched: () => void;
 }) {
+  const { mode } = useMode();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [input, setInput] = useState("");
@@ -70,8 +80,10 @@ export function ChatView({
             id: String(m.id),
             role: m.role,
             content: m.content,
+            mode: m.mode,
             sources: m.sources ?? undefined,
             rerankMethod: m.rerankMethod ?? undefined,
+            agentSteps: m.agentSteps ?? undefined,
           }))
         );
       })
@@ -96,12 +108,13 @@ export function ChatView({
     setInput("");
     setIsBusy(true);
 
-    const userMsg: ChatMessage = { id: uid(), role: "user", content: question };
+    const userMsg: ChatMessage = { id: uid(), role: "user", content: question, mode };
     const assistantId = uid();
     const assistantMsg: ChatMessage = {
       id: assistantId,
       role: "assistant",
       content: "",
+      mode,
       isStreaming: true,
     };
 
@@ -113,13 +126,23 @@ export function ChatView({
       );
     }
 
+    function appendStep(step: AgentStep) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, agentSteps: [...(m.agentSteps ?? []), step] }
+            : m
+        )
+      );
+    }
+
     let resolvedChatId = chatId;
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: question, chatId: chatId ?? undefined }),
+        body: JSON.stringify({ query: question, chatId: chatId ?? undefined, mode }),
       });
       if (!res.body) throw new Error("No response stream from server.");
 
@@ -148,6 +171,8 @@ export function ChatView({
             update({ stage: event.stage, stageDetail: event.detail });
           } else if (event.type === "sources") {
             update({ sources: event.sources as Source[], rerankMethod: event.rerankMethod });
+          } else if (event.type === "agent_step") {
+            appendStep(event.step as AgentStep);
           } else if (event.type === "token") {
             content += event.content;
             update({ content });
@@ -170,10 +195,11 @@ export function ChatView({
     <div className="flex-1 flex min-w-0">
       <div className="flex-1 flex flex-col min-w-0">
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
+          {mode === "agent" && <AgentModelWarning />}
           {loadingHistory ? (
             <p className="text-sm text-paper-400 py-16 text-center">Loading conversation...</p>
           ) : messages.length === 0 ? (
-            <EmptyState hasDocuments={readyDocs.length > 0} onPick={send} />
+            <EmptyState hasDocuments={readyDocs.length > 0} mode={mode} onPick={send} />
           ) : (
             <div className="max-w-[720px] mx-auto px-6 py-8 flex flex-col gap-6">
               {messages.map((m) => (
@@ -208,6 +234,8 @@ export function ChatView({
               placeholder={
                 readyDocs.length === 0
                   ? "Upload a document to start asking questions..."
+                  : mode === "agent"
+                  ? "Ask the agent to do something..."
                   : "Ask about your documents..."
               }
               className="flex-1 resize-none bg-transparent text-[15px] text-paper-200 placeholder:text-paper-400 outline-none py-1.5 max-h-40"
@@ -222,11 +250,23 @@ export function ChatView({
             </button>
           </form>
           <p className="max-w-[720px] mx-auto text-center text-[11px] text-paper-400 mt-2 leading-relaxed">
-            AI-generated — it can make mistakes, so check anything important.
-            This is a RAG assistant, not an autonomous agent: it retrieves
-            passages and answers fresh each turn rather than taking actions.
-            It remembers earlier messages within this chat, but not across
-            different chats.
+            {mode === "agent" ? (
+              <>
+                AI-generated — it can make mistakes, so check anything important.
+                Agent mode can call tools (document search, calculator, and any
+                tools you've added) before answering — its steps are shown live
+                and saved with the message. It remembers earlier messages within
+                this chat, but not across different chats.
+              </>
+            ) : (
+              <>
+                AI-generated — it can make mistakes, so check anything important.
+                This is a RAG assistant, not an autonomous agent: it retrieves
+                passages and answers fresh each turn rather than taking actions.
+                It remembers earlier messages within this chat, but not across
+                different chats. Switch to Agent mode (top right) for tool use.
+              </>
+            )}
           </p>
         </div>
       </div>
@@ -245,9 +285,11 @@ export function ChatView({
 
 function EmptyState({
   hasDocuments,
+  mode,
   onPick,
 }: {
   hasDocuments: boolean;
+  mode: "rag" | "agent";
   onPick: (text: string) => void;
 }) {
   return (
@@ -256,10 +298,12 @@ function EmptyState({
         <BookOpen size={20} className="text-brass-300" />
       </div>
       <h2 className="font-serif italic text-3xl text-paper-100">
-        Ask your documents anything
+        {mode === "agent" ? "Ask the agent anything" : "Ask your documents anything"}
       </h2>
       <p className="text-paper-400 mt-3 max-w-md leading-relaxed">
-        {hasDocuments
+        {mode === "agent"
+          ? "It can search your documents, use its other tools, and show you exactly how it got to an answer."
+          : hasDocuments
           ? "Every answer is grounded in what you've uploaded, with numbered sources you can open and check."
           : "Add a document on the shelf, then come back here to ask about it."}
       </p>

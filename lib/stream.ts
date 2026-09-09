@@ -6,6 +6,7 @@ export type StreamEvent =
   | { type: "stage"; stage: string; detail?: string }
   | { type: "token"; content: string }
   | { type: "sources"; sources: unknown[]; rerankMethod: string }
+  | { type: "agent_step"; step: unknown }
   | { type: "document"; document: unknown }
   | { type: "chat"; chat: unknown }
   | { type: "done" }

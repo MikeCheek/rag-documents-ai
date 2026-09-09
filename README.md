@@ -1,8 +1,10 @@
-# Reading Room — RAG document Q&A
+# Reading Room — RAG & Agent document Q&A
 
 A Next.js app that lets you upload documents (PDF, DOCX, TXT, MD, CSV) and
-ask questions about them in a chat interface. Every answer is grounded in
-your documents and cites the exact passages it drew on — with multiple
+ask questions about them in a chat interface, in either of two modes:
+plain RAG (retrieve, then answer) or an Agent mode that can call tools —
+document search, a calculator, and any custom API you add — in a loop
+before answering. Every answer is grounded and citable, with multiple
 persisted conversations, a usage dashboard, and full control over which
 pipeline steps cost an API call.
 
@@ -26,6 +28,15 @@ entirely for switching between conversations.
   inline citations like `[1]`, `[2]` — click one (or the source chip
   under the answer) to open the **Sources panel**, which shows the exact
   passage, its source document, and a relevance bar.
+- **Math, chemistry, and nuclear notation render properly** (via
+  `remark-math` + `rehype-katex`/KaTeX) instead of showing raw LaTeX
+  source — a model output like `\(^{4}_{3}\mathrm{Li}\)` renders as an
+  actual isotope symbol, not a string full of stray backslashes and
+  braces. The system prompt asks the model for `$...$`/`$$...$$`
+  delimiters, and `\(...\)`/`\[...\]` are normalized to that automatically
+  as a fallback, since plain CommonMark otherwise mangles raw LaTeX badly
+  (it silently strips backslashes before punctuation, and underscore
+  subscripts collide with markdown's emphasis syntax).
 - While an answer is being produced, a live stage indicator shows exactly
   where the pipeline is: reading the question → searching the shelf →
   ranking passages → writing the answer.
@@ -42,8 +53,6 @@ entirely for switching between conversations.
   model's context is compacted.
 
 ### 📚 Documents — "The Shelf"
-
-![The shelf, showing all the documents added to the database and adding new ones](docs/screenshots/shelf.png)
 
 Its own full page now (not a sidebar tab), with documents shown as tiles
 in a responsive grid rather than a list:
@@ -79,8 +88,6 @@ in a responsive grid rather than a list:
   close, red = near the limit, dim = not configured.
 
 ### 🌌 Embedding space — "The Constellation"
-
-![The constellation, showing the chunks related to a prompt with embeddings plot into 3d space](docs/screenshots/constellation.png)
 
 Enter any word or phrase and see it mapped in 3D alongside the passages
 closest to it in embedding space, plus a handful of unrelated passages
@@ -119,6 +126,76 @@ full breakdown of what each option costs.
 
 Both save instantly when clicked — no separate save button.
 
+### 🤖 Agent mode
+
+A toggle in the top navbar (RAG / Agent) switches how the *next* message
+in any chat gets answered. Nothing is locked per chat — mode is tracked
+**per message**, not per chat, so a single conversation can freely mix
+RAG turns and Agent turns; each assistant message shows a small badge
+saying which one produced it.
+
+- **RAG mode** (default): the fixed retrieve-then-answer pipeline described
+  above.
+- **Agent mode**: the model can call tools — possibly several times, in a
+  loop — before producing a final answer, instead of always retrieving
+  automatically. Built-in tools:
+  - `search_documents` — the same retrieval + rerank pipeline as RAG mode,
+    but now something the model *chooses* to call (and can call again with
+    a refined query if the first search wasn't enough).
+  - `list_documents` — what's uploaded and its status, so the model can
+    check before searching.
+  - `calculator` — arithmetic via a restricted expression parser
+    ([`expr-eval`](https://www.npmjs.com/package/expr-eval)), not `eval()`.
+  - `current_datetime` — optionally in a specific IANA timezone.
+  - **Custom tools**, added from the "Agent mode" section of Settings:
+    name, description, HTTP method, a URL template with `{param}`
+    placeholders, and a parameter list. Deliberately HTTP-calling rather
+    than arbitrary code — "add a tool" means "call an API", not "run
+    generated code on the server". Requests are guarded against hitting
+    private/internal network addresses (loopback, `10.x`, `172.16-31.x`,
+    `192.168.x`, link-local/cloud-metadata ranges) — worth having even in
+    a single-user self-hosted app, since a tool call is initiated by the
+    *model*, and content it retrieves from a document could in principle
+    try to prompt-inject it into calling a tool somewhere it shouldn't.
+  - A **max tool calls per turn** limit (Settings, default 6) caps the
+    total number of tool calls in a single turn — enforced per call, not
+    per LLM round-trip, since a single response can legally request
+    several tool calls at once and an iteration-based cap wouldn't catch
+    that. Exact-repeat calls (same tool, same arguments) are served from a
+    per-turn cache instead of re-running the pipeline. If the cap is hit
+    mid-batch, every outstanding tool call still gets answered (even if
+    that answer is just "skipped"), then one final call is made with no
+    tools offered, forcing a real answer instead of leaving you with
+    nothing.
+- **Thinking is recorded, not just streamed**: every tool call and its
+  result appears live as it happens (a collapsible "Thinking" panel on the
+  message), and the full sequence is saved with the message — reopening
+  the chat later shows exactly the same steps, not just the final text.
+- **Tool usage is tracked** the same way API usage already is, visible on
+  the Ledger.
+- **Cost tradeoff, stated plainly**: Agent mode uses *more* API calls per
+  turn than RAG mode, not fewer — each tool round trip is a real call to
+  OpenRouter. This is the opposite direction from minimizing calls; it's a
+  genuine tradeoff for the added capability, not a free upgrade.
+- **Model compatibility matters here**: `openrouter/free` (the default) is
+  an auto-router across many free models, and not all of them support
+  OpenAI-style tool calling — if Agent mode's tool calls seem to silently
+  not happen, this is almost always why. The app checks this for you: if
+  the configured model is the auto-router, or is a specific model that
+  doesn't advertise tool support (checked live against OpenRouter's public
+  `/models` endpoint, cached for an hour), a dismissible banner appears in
+  Agent mode pointing you at Settings to pick a tool-capable one.
+- **The model itself is a Settings-page setting, not just an env var.**
+  Settings → "The Method" → Model shows every current free OpenRouter
+  model with a green "Tools" badge on the ones that support function
+  calling, searchable, plus a manual text field if you'd rather pin any
+  model id directly (including a paid one). This one setting controls
+  every OpenRouter call the app makes — query rewriting, RAG answers,
+  Agent mode, and compaction — there's no separate model per feature.
+  `OPENROUTER_MODEL` in `.env.local` still exists, but only seeds the
+  first-ever value; after that, changing it there does nothing until you
+  change it in Settings, which is the one source of truth from then on.
+
 ## How it works
 
 ```
@@ -139,27 +216,39 @@ Chat:    question -> optimize query -> vector search (Supabase)
 
 ## API usage
 
-Every turn potentially touches up to four different services. Each has a
-free local alternative except the final answer itself:
+This table describes **RAG mode**. Every turn potentially touches up to
+four different services, each with a free local alternative except the
+final answer itself:
 
-| Step                                 | Options (set in Settings)                    | Cost                                                                                                       |
-| ------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Embeddings (documents & every query) | always local                                 | **Free** — runs locally via Xenova, in this Node process                                                   |
-| Retrieval (vector search)            | always your own Postgres                     | **Free** — your Supabase database                                                                          |
-| Query optimization                   | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call                                                              |
-| Reranking                            | Cohere / **Local BM25** / Off                | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
-| Answer generation                    | always OpenRouter                            | 1 API call — this is the one you keep                                                                      |
-| Compaction                           | automatic, occasional                        | 1 OpenRouter call, only once every ~24 messages in a chat                                                  |
+| Step | Options (set in Settings) | Cost |
+|---|---|---|
+| Embeddings (documents & every query) | always local | **Free** — runs locally via Xenova, in this Node process |
+| Retrieval (vector search) | always your own Postgres | **Free** — your Supabase database |
+| Query optimization | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call |
+| Reranking | Cohere / **Local BM25** / Off | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
+| Answer generation | always OpenRouter | 1 API call — this is the one you keep |
+| Compaction | automatic, occasional | 1 OpenRouter call, only once every ~24 messages in a chat |
 
 With **Query optimization: Local** and **Reranking: Local BM25** (the
-defaults), a normal chat turn makes **exactly one API call** — the
-OpenRouter call that writes the answer. Local query optimization
+defaults), a normal RAG-mode chat turn makes **exactly one API call** —
+the OpenRouter call that writes the answer. Local query optimization
 (`lib/rag/local-nlp.ts`) uses `wink-nlp`, a pure-JS library with a bundled
 English model, for stopword removal and lemmatization (e.g. "running
 machines" → "run machine") — no network call. Local reranking
 (`lib/rag/bm25.ts`) is a from-scratch BM25 implementation, the same
 lexical-ranking algorithm behind most classic search engines, scored over
 those same lemmatized tokens.
+
+**Agent mode is different**: every LLM round-trip in the tool-calling loop
+is its own OpenRouter call (logged separately from the final answer,
+purpose `agent_step` vs `chat_completion`, so the Ledger's "Answers
+generated" stat isn't inflated by intermediate steps) — but a single
+round-trip can carry several tool calls at once, so the call count doesn't
+scale 1:1 with tool calls the way it does with rounds. A turn that ends up
+making 4 tool calls, all requested in one round-trip, is 2 OpenRouter
+calls (that round-trip plus the final answer); the same 4 tool calls
+spread one-per-round-trip would be 5. Either way, the total number of tool
+calls itself is capped by the "max tool calls per turn" setting.
 
 The Ledger tracks every call your own app makes (logged to the `api_calls`
 table) so the dashboard's numbers are exact for this app, though they
@@ -195,7 +284,7 @@ Fill in:
 
 ### 4. Set up the database
 
-In the Supabase SQL editor, run these five files in order:
+In the Supabase SQL editor, run these seven files in order:
 
 ```
 db/migrations/0000_init.sql          -- pgvector, documents, chunks
@@ -203,6 +292,8 @@ db/migrations/0001_dashboard.sql     -- usage_count column, api_calls log
 db/migrations/0002_chats_and_settings.sql  -- chats, chat_messages, settings
 db/migrations/0003_rls.sql           -- locks tables out of Supabase's REST API
 db/migrations/0004_local_nlp_settings.sql  -- query optimization / rerank mode settings
+db/migrations/0005_agent_mode.sql    -- agent mode, custom tools, tool call log
+db/migrations/0006_openrouter_model_setting.sql -- moves the model into a live setting
 ```
 
 **Use the SQL editor, not `npm run db:push`, for this project.**
@@ -236,20 +327,24 @@ navbar), wait for it to say "ready", then ask a question in the chat.
 ```
 app/
   page.tsx                    # Main app shell (sidebar + chat)
-  dashboard/page.tsx           # "The Ledger" — DB stats, API usage, passage usage grid
-  settings/page.tsx            # "The Method" — query optimization & reranking modes
+  dashboard/page.tsx           # "The Ledger" — DB stats, API usage, passage/tool usage grids
+  settings/page.tsx            # "The Method" — query/rerank modes + Agent mode + tools
   constellation/page.tsx       # "The Constellation" — 3D embedding-space map
   shelf/page.tsx                # "The Shelf" — filterable/sortable document tile grid
   api/upload/route.ts          # Streams upload/embedding progress
-  api/chat/route.ts            # Streams pipeline stages + answer tokens, persists messages
+  api/chat/route.ts            # Streams pipeline stages + answer tokens; branches RAG/Agent
   api/chats/route.ts           # List chats
   api/chats/[id]/route.ts      # Load history / rename / pin / delete a chat
   api/documents/route.ts       # List documents
   api/documents/[id]/route.ts  # Rename / delete a document
   api/dashboard/route.ts       # Aggregates stats for the dashboard
   api/usage/route.ts           # Lightweight usage snapshot for the navbar dots
-  api/settings/route.ts        # Read / update limits + query/rerank modes
+  api/settings/route.ts        # Read / update limits + query/rerank modes + agent max steps
   api/embedding-space/route.ts # Embeds a phrase, finds neighbors, projects to 3D
+  api/agent-tools/route.ts     # List built-in + custom tools; create a custom tool
+  api/agent-tools/[id]/route.ts # Enable/disable, edit, or delete a custom tool
+  api/agent-model-check/route.ts # Checks the configured model's tool-calling support
+  api/openrouter-models/route.ts # Lists free OpenRouter models, flagged by tool support
 lib/rag/
   embeddings.ts                # Local Xenova embeddings
   extract-text.ts              # PDF / DOCX / TXT extraction
@@ -263,19 +358,33 @@ lib/rag/
   usage.ts                     # Logs API calls, passage usage, usage aggregation
   chats.ts                     # Chat title derivation + context loading
   compaction.ts                # Folds old messages into a running summary
-  settings.ts                  # Reads/writes limits + query/rerank mode settings
+  settings.ts                  # Reads/writes limits + query/rerank/agent settings
   embedding-space.ts           # Nearest-neighbor search + UMAP projection to 3D
+lib/agent/
+  tools.ts                     # Built-in tools: search_documents, list_documents, calculator, current_datetime
+  custom-tools.ts               # Loads custom tools from DB, executes them over HTTP
+  ssrf-guard.ts                  # Blocks custom tool calls to private/internal addresses
+  loop.ts                        # The tool-calling agent loop, with step recording
+  model-check.ts                 # Checks the configured model's tool support + lists free models
+  tool-usage.ts                   # Aggregates tool_call_log for the dashboard
 lib/
   constellation-colors.ts      # Golden-angle per-document color assignment
+  markdown.ts                  # Normalizes \( \) / \[ \] LaTeX delimiters to $ / $$
 db/
-  schema.ts                    # Drizzle schema (documents, chunks, chats, chat_messages, api_calls, settings)
+  schema.ts                    # Drizzle schema (documents, chunks, chats, chat_messages, agent_tools, tool_call_log, api_calls, settings)
   migrations/                  # Raw SQL for the Supabase SQL editor
 components/                    # UI (top navbar, sidebar, chat list, chat, sources panel, etc.)
-components/dashboard/          # Stat cards, editable usage meters, passage usage grid
+components/dashboard/          # Stat cards, editable usage meters, passage/tool usage grids
 components/constellation/      # The three.js/@react-three/fiber 3D scene + collapsible results list
 components/shelf/              # Document tile grid
+components/settings/           # Model picker + agent tools manager
 docs/screenshots/              # Screenshots used in this README
 ```
+
+Agent-mode-specific frontend pieces (not tied to one folder above):
+`ModeProvider.tsx` / `ModeToggle.tsx` (RAG/Agent switch, in the navbar),
+`AgentSteps.tsx` (the live + persisted "Thinking" panel on a message),
+`AgentModelWarning.tsx` (the dismissible tool-support warning banner).
 
 ## Notes
 
@@ -283,14 +392,48 @@ docs/screenshots/              # Screenshots used in this README
   PDF/DOCX parsing, and the Postgres client all need it.
 - Supabase free projects pause after ~1 week of inactivity — resume from the
   dashboard if you see a connection error.
+- **Mode is tracked per message, not per chat.** A chat's `mode` isn't a
+  fixed property — every message row (`chat_messages.mode`) records which
+  pipeline produced or received it, so switching RAG/Agent mid-conversation
+  is always allowed and each turn is honestly labeled, rather than forcing
+  a chat to pick one mode at creation time.
+- **Agent mode won't always search your documents, even when relevant.**
+  Unlike RAG mode (which always retrieves), the model decides whether a
+  question needs `search_documents` — the system prompt nudges it to check
+  proactively, but a question it can answer from general training
+  knowledge may not trigger a search even if your documents also cover it.
+  If you want retrieval to happen every time, RAG mode does that
+  unconditionally; Agent mode trades that guarantee for the ability to act
+  on the answer.
+- **Redundant tool calls are only caught when they're exact repeats**
+  (same tool, same arguments, case/whitespace-insensitive — served from a
+  per-turn cache instead of re-running the pipeline). A model that issues
+  several genuinely-differently-worded searches for the same underlying
+  question isn't deduplicated — that's mitigated by the system prompt
+  asking for one well-chosen query per concept, not prevented outright.
+  Free/weaker models (especially via the `openrouter/free` auto-router)
+  tend to do this more; pinning a stronger tool-calling model in Settings
+  usually reduces it.
+- **Custom agent tools call HTTP endpoints, not code.** There's no way to
+  give the agent a tool that runs arbitrary server-side logic — "add a
+  tool" always means "call a URL with these parameters". This is a
+  deliberate ceiling on what "create more tools" can mean here, in
+  exchange for not needing to sandbox arbitrary code execution.
+- The SSRF guard on custom tools (`lib/agent/ssrf-guard.ts`) blocks
+  loopback, private (`10.x`, `172.16-31.x`, `192.168.x`), and link-local/
+  cloud-metadata address ranges, resolving hostnames via DNS first so a
+  domain that merely *points at* a private IP is caught too — but it can't
+  stop a custom tool from calling a public API that itself does something
+  undesirable with the data it's sent. Treat custom tools as extending
+  trust to whatever they call.
 - Deleting a document cascades to its chunks in the database. Deleting a
   chat cascades to its messages. Renaming happens instantly (no
   confirmation); deleting asks for confirmation first.
 - `openrouter/free` is a moving target — OpenRouter rotates which
   underlying free model it auto-routes to, and free models can be pulled
-  from the catalog with little notice. To pin a specific model instead, set
-  `OPENROUTER_MODEL` to a particular `*:free` id from
-  https://openrouter.ai/models (filter "Price: Free").
+  from the catalog with little notice. To pin a specific model instead,
+  use the model picker in Settings — it lists what's currently free and
+  flags which ones support tool calling, so you're not guessing.
 - Free-tier limits shown on the dashboard (OpenRouter: 20 requests/minute
   always, 50/day until you've bought $10+ in credits then 1,000/day;
   Cohere: 1,000 calls/month, 10 rerank calls/minute) are hardcoded from
@@ -322,4 +465,3 @@ docs/screenshots/              # Screenshots used in this README
   install it; moving it to a dedicated schema is possible but not done
   here, since it requires re-pointing the `vector` type in the schema and
   isn't a functional problem, just a lint preference.
-

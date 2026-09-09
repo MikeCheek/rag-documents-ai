@@ -55,3 +55,18 @@
   color: #E0BD7C;
   text-underline-offset: 2px;
 }
+
+/* KaTeX ships assuming a light page background and unconstrained width.
+   Inherit our text color instead of black, and let wide equations scroll
+   horizontally within the chat bubble instead of overflowing or wrapping
+   mid-formula. */
+.prose-answer .katex {
+  color: inherit;
+  font-size: 1.05em;
+}
+.prose-answer .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}

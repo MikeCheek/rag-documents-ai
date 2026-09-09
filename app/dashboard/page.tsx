@@ -7,6 +7,7 @@ import type { AppLimits, DashboardData } from "@/types";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { OpenRouterUsageCard, CohereUsageCard, LocalUsageCard } from "@/components/dashboard/UsageCard";
 import { ChunkUsageGrid } from "@/components/dashboard/ChunkUsageGrid";
+import { ToolUsageGrid } from "@/components/dashboard/ToolUsageGrid";
 import { formatBytes } from "@/lib/utils";
 
 export default function DashboardPage() {
@@ -140,6 +141,11 @@ export default function DashboardPage() {
             <section>
               <h2 className="text-xs text-paper-400 mb-3">Passage usage</h2>
               <ChunkUsageGrid chunks={data.chunks} />
+            </section>
+
+            <section>
+              <h2 className="text-xs text-paper-400 mb-3">Tool usage (Agent mode)</h2>
+              <ToolUsageGrid rows={data.toolUsage} />
             </section>
           </div>
         )}

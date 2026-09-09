@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import type { AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
+import { AgentToolsManager } from "@/components/settings/AgentToolsManager";
+import { ModelPicker } from "@/components/settings/ModelPicker";
 import { cn } from "@/lib/utils";
 
 const QUERY_OPTIONS: { value: QueryOptimizationMode; label: string; description: string }[] = [
@@ -87,7 +89,7 @@ export default function SettingsPage() {
 
   return (
     <main className="h-full overflow-y-auto bg-ink-900 text-paper-200">
-      <div className="max-w-[720px] mx-auto px-6 py-8">
+      <div className="max-w-[820px] mx-auto px-6 py-8">
         <h1 className="font-serif italic text-3xl text-paper-100">The Method</h1>
         <p className="text-sm text-paper-400 mt-1 mb-8">
           How each question gets processed before it&apos;s answered — trade API calls
@@ -104,6 +106,22 @@ export default function SettingsPage() {
           <p className="text-sm text-paper-400 py-10 text-center">Loading...</p>
         ) : (
           <div className="flex flex-col gap-10">
+            <section>
+              <h2 className="text-xs text-paper-400 mb-3">Model</h2>
+              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                Used for every OpenRouter call — query rewriting, RAG answers,
+                Agent mode, and compaction. The auto-router
+                (<span className="font-mono">openrouter/free</span>) picks a
+                different free model per request and may not always support
+                tool calling; pin a specific model below for reliable Agent
+                mode.
+              </p>
+              <ModelPicker
+                value={settings.openrouterModel}
+                onSave={(model) => update({ openrouterModel: model })}
+              />
+            </section>
+
             <section>
               <h2 className="text-xs text-paper-400 mb-3">Query optimization</h2>
               <p className="text-xs text-paper-400 mb-3 leading-relaxed">
@@ -135,10 +153,62 @@ export default function SettingsPage() {
                 }
               />
             </section>
+
+            <section>
+              <h2 className="text-xs text-paper-400 mb-3">Agent mode</h2>
+              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                Switch a chat into Agent mode (top navbar) and the model can call
+                tools — possibly several times — before answering. The step
+                limit below caps the total number of tool calls in a single
+                turn, even if the model requests several at once — each one is
+                a real search or API call, not a free action.
+              </p>
+
+              <MaxStepsInput value={settings.agentMaxSteps} onSave={(v) => update({ agentMaxSteps: v })} />
+
+              <AgentToolsManager />
+            </section>
           </div>
         )}
       </div>
     </main>
+  );
+}
+
+function MaxStepsInput({ value, onSave }: { value: number; onSave: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => setDraft(String(value)), [value]);
+
+  function commit() {
+    const n = Math.round(Number(draft));
+    if (Number.isFinite(n) && n >= 1 && n <= 20 && n !== value) {
+      onSave(n);
+    } else {
+      setDraft(String(value));
+    }
+  }
+
+  return (
+    <label className="flex items-center justify-between gap-3 rounded-lg border border-ink-600 bg-ink-800 px-4 py-3 mb-4 max-w-xs">
+      <span className="text-sm text-paper-300">Max tool-call steps per turn</span>
+      <input
+        type="number"
+        min={1}
+        max={20}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+            e.currentTarget.blur();
+          }
+        }}
+        className="w-16 bg-ink-700 border border-ink-600 rounded px-2 py-1 text-paper-200 text-right outline-none focus:border-brass-400/60"
+      />
+    </label>
   );
 }
 

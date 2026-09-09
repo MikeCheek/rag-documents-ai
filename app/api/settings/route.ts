@@ -5,12 +5,16 @@ import type { AppLimits, AppSettings, QueryOptimizationMode, RerankMode } from "
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const NUMERIC_KEYS: (keyof AppLimits)[] = [
-  "cohereMonthlyCap",
-  "coherePerMinuteCap",
-  "openrouterPerMinuteCap",
-  "openrouterDailyCap",
-];
+const NUMERIC_BOUNDS: Record<keyof AppLimits, { min: number; max: number }> = {
+  cohereMonthlyCap: { min: 1, max: 1_000_000 },
+  coherePerMinuteCap: { min: 1, max: 1_000_000 },
+  openrouterPerMinuteCap: { min: 1, max: 1_000_000 },
+  openrouterDailyCap: { min: 1, max: 1_000_000 },
+  // Deliberately tight: each step is a real API call in a loop, so a huge
+  // cap risks a runaway, expensive request rather than just a UI oddity.
+  agentMaxSteps: { min: 1, max: 20 },
+};
+const NUMERIC_KEYS = Object.keys(NUMERIC_BOUNDS) as (keyof AppLimits)[];
 
 const QUERY_OPTIMIZATION_MODES: QueryOptimizationMode[] = ["off", "local", "llm"];
 const RERANK_MODES: RerankMode[] = ["cohere", "bm25", "off"];
@@ -35,9 +39,10 @@ export async function PATCH(req: NextRequest) {
     for (const key of NUMERIC_KEYS) {
       if (body?.[key] === undefined) continue;
       const value = Number(body[key]);
-      if (!Number.isFinite(value) || value < 1 || value > 1_000_000) {
+      const { min, max } = NUMERIC_BOUNDS[key];
+      if (!Number.isFinite(value) || value < min || value > max) {
         return NextResponse.json(
-          { error: `${key} must be a number between 1 and 1,000,000` },
+          { error: `${key} must be a number between ${min} and ${max}` },
           { status: 400 }
         );
       }
@@ -62,6 +67,17 @@ export async function PATCH(req: NextRequest) {
         );
       }
       patch.rerankMethod = body.rerankMethod;
+    }
+
+    if (body?.openrouterModel !== undefined) {
+      const model = String(body.openrouterModel).trim();
+      if (!model || model.length > 200) {
+        return NextResponse.json(
+          { error: "openrouterModel must be a non-empty model id (max 200 characters)." },
+          { status: 400 }
+        );
+      }
+      patch.openrouterModel = model;
     }
 
     if (Object.keys(patch).length === 0) {

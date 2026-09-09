@@ -1,4 +1,4 @@
-import { getOpenRouter, CHAT_MODEL } from "./clients";
+import { getOpenRouter } from "./clients";
 import { logApiCall } from "./usage";
 
 const SYSTEM_PROMPT = `You are part of a RAG (Retrieval-Augmented Generation) system. Rewrite the user's message into a short, self-contained search query optimized for retrieving relevant passages from a document knowledge base.
@@ -14,7 +14,8 @@ Output only the rewritten query, nothing else.`;
 export async function getOptimizedQuery(
   query: string,
   history: { role: "user" | "assistant"; content: string }[] = [],
-  summary?: string | null
+  summary: string | null | undefined,
+  model: string
 ): Promise<string> {
   const openrouter = getOpenRouter();
 
@@ -24,7 +25,7 @@ export async function getOptimizedQuery(
     : SYSTEM_PROMPT;
 
   const response = await openrouter.chat.completions.create({
-    model: CHAT_MODEL,
+    model,
     messages: [
       { role: "system", content: systemPrompt },
       ...recentHistory.map((m) => ({ role: m.role, content: m.content })),

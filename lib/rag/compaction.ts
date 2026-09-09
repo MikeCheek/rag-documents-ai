@@ -1,6 +1,7 @@
 import { and, asc, eq, gt } from "drizzle-orm";
 import { getDb, chatsTable, chatMessagesTable } from "@/db";
-import { getOpenRouter, CHAT_MODEL } from "./clients";
+import { getOpenRouter } from "./clients";
+import { getSettings } from "./settings";
 import { logApiCall } from "./usage";
 
 // Once a chat has this many messages since its last compaction, fold all
@@ -40,8 +41,9 @@ export async function maybeCompactChat(chatId: string): Promise<void> {
       .join("\n\n");
 
     const openrouter = getOpenRouter();
+    const settings = await getSettings();
     const response = await openrouter.chat.completions.create({
-      model: CHAT_MODEL,
+      model: settings.openrouterModel,
       temperature: 0.2,
       messages: [
         { role: "system", content: SUMMARY_SYSTEM_PROMPT },

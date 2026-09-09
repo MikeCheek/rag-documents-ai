@@ -7,6 +7,8 @@ import {
   chatsTable,
   chatMessagesTable,
   settingsTable,
+  agentToolsTable,
+  toolCallLogTable,
 } from "./schema";
 
 const schema = {
@@ -16,6 +18,8 @@ const schema = {
   chats: chatsTable,
   chatMessages: chatMessagesTable,
   settings: settingsTable,
+  agentTools: agentToolsTable,
+  toolCallLog: toolCallLogTable,
 };
 
 let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
@@ -45,4 +49,6 @@ export {
   chatsTable,
   chatMessagesTable,
   settingsTable,
+  agentToolsTable,
+  toolCallLogTable,
 };

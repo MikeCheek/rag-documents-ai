@@ -2,16 +2,42 @@
 
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
-import { AlertTriangle } from "lucide-react";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import { AlertTriangle, Bot, BookOpen } from "lucide-react";
 import type { ChatMessage } from "@/types";
+import { normalizeMathDelimiters } from "@/lib/markdown";
 import { PipelineStatus } from "./PipelineStatus";
+import { AgentSteps } from "./AgentSteps";
 import { cn } from "@/lib/utils";
+import "katex/dist/katex.min.css";
 
 // Turn "[1]" style citation markers into markdown links (#cite-1) so
 // react-markdown renders them, then we intercept those links below and
-// render them as clickable citation badges instead.
-function withCitationLinks(text: string): string {
-  return text.replace(/\[(\d+)\]/g, "[$1](#cite-$1)");
+// render them as clickable citation badges instead. Math delimiters are
+// normalized first so this never runs on raw LaTeX brace/bracket syntax.
+function prepareContent(text: string): string {
+  return normalizeMathDelimiters(text).replace(/\[(\d+)\]/g, "[$1](#cite-$1)");
+}
+
+function ModeBadge({ mode }: { mode: "rag" | "agent" }) {
+  const isAgent = mode === "agent";
+  return (
+    <div className="flex items-center gap-1 mb-1.5 text-[10px] uppercase tracking-wide text-paper-400">
+      {isAgent ? <Bot size={11} className="text-brass-300" /> : <BookOpen size={11} />}
+      {isAgent ? "Agent" : "RAG"}
+    </div>
+  );
+}
+
+function AgentStageLine({ stage, detail }: { stage: string; detail?: string }) {
+  const label =
+    stage === "calling_tool"
+      ? `Calling ${detail}...`
+      : stage === "generating"
+      ? "Writing answer..."
+      : `Thinking${detail ? ` (${detail})` : ""}...`;
+  return <p className="text-sm text-paper-400 font-mono animate-pulse">{label}</p>;
 }
 
 export function MessageBubble({
@@ -33,7 +59,10 @@ export function MessageBubble({
     );
   }
 
-  const showPipeline = message.isStreaming && !message.content && message.stage;
+  const isAgent = message.mode === "agent";
+  const agentSteps = message.agentSteps ?? [];
+  const hasSteps = agentSteps.length > 0;
+  const showStageOnly = message.isStreaming && !message.content && !hasSteps && message.stage;
   const sourceCount = message.sources?.length ?? 0;
 
   const components: Components = {
@@ -72,35 +101,53 @@ export function MessageBubble({
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <p>{message.error}</p>
             </div>
-          ) : showPipeline ? (
-            <PipelineStatus stage={message.stage!} detail={message.stageDetail} kind="chat" />
           ) : (
             <>
-              <div className="prose-answer text-[15px] text-paper-200 leading-relaxed">
-                <ReactMarkdown components={components}>
-                  {withCitationLinks(message.content)}
-                </ReactMarkdown>
-                {message.isStreaming && (
-                  <span className="inline-block w-1.5 h-4 bg-brass-400 align-middle ml-0.5 animate-blink" />
-                )}
-              </div>
+              {message.mode && <ModeBadge mode={message.mode} />}
 
-              {sourceCount > 0 && (
-                <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                  <span className="text-xs text-paper-400 mr-1">Sources</span>
-                  {message.sources!.map((s, i) => (
-                    <button
-                      key={s.chunkId}
-                      onClick={() => onCiteClick(i)}
-                      className="flex items-center gap-1.5 rounded-full border border-ink-600 hover:border-brass-400/60 bg-ink-800 pl-1.5 pr-2.5 py-0.5 text-xs text-paper-300 hover:text-paper-200 transition-colors"
+              {showStageOnly ? (
+                isAgent ? (
+                  <AgentStageLine stage={message.stage!} detail={message.stageDetail} />
+                ) : (
+                  <PipelineStatus stage={message.stage!} detail={message.stageDetail} kind="chat" />
+                )
+              ) : (
+                <>
+                  {isAgent && hasSteps && (
+                    <AgentSteps steps={agentSteps} live={message.isStreaming} />
+                  )}
+
+                  <div className="prose-answer text-[15px] text-paper-200 leading-relaxed">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={components}
                     >
-                      <span className="flex items-center justify-center h-4 w-4 rounded-full border border-brass-400/60 text-brass-300 text-[10px] font-mono">
-                        {i + 1}
-                      </span>
-                      <span className="max-w-[140px] truncate">{s.documentName}</span>
-                    </button>
-                  ))}
-                </div>
+                      {prepareContent(message.content)}
+                    </ReactMarkdown>
+                    {message.isStreaming && (
+                      <span className="inline-block w-1.5 h-4 bg-brass-400 align-middle ml-0.5 animate-blink" />
+                    )}
+                  </div>
+
+                  {sourceCount > 0 && (
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <span className="text-xs text-paper-400 mr-1">Sources</span>
+                      {message.sources!.map((s, i) => (
+                        <button
+                          key={s.chunkId}
+                          onClick={() => onCiteClick(i)}
+                          className="flex items-center gap-1.5 rounded-full border border-ink-600 hover:border-brass-400/60 bg-ink-800 pl-1.5 pr-2.5 py-0.5 text-xs text-paper-300 hover:text-paper-200 transition-colors"
+                        >
+                          <span className="flex items-center justify-center h-4 w-4 rounded-full border border-brass-400/60 text-brass-300 text-[10px] font-mono">
+                            {i + 1}
+                          </span>
+                          <span className="max-w-[140px] truncate">{s.documentName}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
