@@ -161,7 +161,13 @@ async function execSearchDocuments(
   const limit = Math.min(Math.max(Math.round(args.limit ?? 5), 1), 10);
   const settings = await getSettings();
   const retrieved = await retrieveChunks(query, { limit: 12 });
-  const { results } = await rankDocuments(query, retrieved, limit, settings.rerankMethod);
+  const { results } = await rankDocuments(
+    query,
+    retrieved,
+    limit,
+    settings.rerankMethod,
+    settings.coherePerMinuteCap
+  );
 
   incrementChunkUsage(results.map((r) => r.chunkId));
 

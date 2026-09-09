@@ -3,6 +3,7 @@ import { getDb, chatsTable, chatMessagesTable } from "@/db";
 import { getOpenRouter } from "./clients";
 import { getSettings } from "./settings";
 import { logApiCall } from "./usage";
+import { openrouterLimiter } from "./rate-limiter";
 
 // Once a chat has this many messages since its last compaction, fold all
 // but the most recent ones into a running summary. Keeps the context sent
@@ -42,6 +43,10 @@ export async function maybeCompactChat(chatId: string): Promise<void> {
 
     const openrouter = getOpenRouter();
     const settings = await getSettings();
+    // Fire-and-forget background task — no live UI to update, but still
+    // needs to wait its turn rather than firing a call that blows past
+    // the configured rate limit.
+    await openrouterLimiter.waitForSlot(settings.openrouterPerMinuteCap);
     const response = await openrouter.chat.completions.create({
       model: settings.openrouterModel,
       temperature: 0.2,

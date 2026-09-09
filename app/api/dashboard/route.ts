@@ -3,6 +3,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { getDb, documentsTable, chunksTable } from "@/db";
 import { getUsageSnapshot } from "@/lib/rag/usage";
 import { getToolUsage } from "@/lib/agent/tool-usage";
+import { getTimingStats } from "@/lib/rag/timing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,6 +39,7 @@ export async function GET() {
 
     const { usage, limits, configured } = await getUsageSnapshot();
     const toolUsage = await getToolUsage();
+    const { byStage: timingByStage, dailyTrend: timingDailyTrend } = await getTimingStats();
 
     return NextResponse.json({
       documents: docStats ?? {
@@ -53,6 +55,8 @@ export async function GET() {
       configured,
       chunks,
       toolUsage,
+      timingByStage,
+      timingDailyTrend,
     });
   } catch (err: any) {
     return NextResponse.json(

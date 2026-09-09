@@ -31,6 +31,8 @@ export type ChatMessage = {
   rerankMethod?: RerankResultMethod | string;
   agentSteps?: AgentStep[];
   apiCallCount?: number;
+  durationMs?: number;
+  createdAt?: string;
   stage?: string;
   stageDetail?: string;
   isStreaming?: boolean;
@@ -111,6 +113,19 @@ export type UsageSnapshot = {
   configured: ProviderConfigured;
 };
 
+export type StageTimingRow = {
+  stage: string;
+  avgDurationMs: number;
+  count: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+};
+
+export type TimingDailyPoint = {
+  date: string;
+  avgDurationMs: number;
+};
+
 export type DashboardData = UsageSnapshot & {
   documents: {
     total: number;
@@ -122,6 +137,8 @@ export type DashboardData = UsageSnapshot & {
   };
   chunks: ChunkUsageRow[];
   toolUsage: ToolUsageRow[];
+  timingByStage: StageTimingRow[];
+  timingDailyTrend: TimingDailyPoint[];
 };
 
 export type ChatSummary = {
@@ -142,6 +159,7 @@ export type StoredChatMessage = {
   rerankMethod: RerankResultMethod | string | null;
   agentSteps: AgentStep[] | null;
   apiCallCount: number | null;
+  durationMs: number | null;
   createdAt: string;
 };
 
@@ -213,4 +231,15 @@ export type EmbeddingSpacePoint = {
 export type EmbeddingSpaceResult = {
   query: { x: number; y: number; z: number };
   points: EmbeddingSpacePoint[];
+};
+
+export type DocumentCluster = {
+  id: string;
+  label: string;
+  documentIds: string[];
+};
+
+export type ClusterResult = {
+  clusters: DocumentCluster[];
+  singletonIds: string[];
 };

@@ -4,6 +4,7 @@ import { getDb, documentsTable, chunksTable } from "@/db";
 import { extractText, isSupportedFile } from "@/lib/rag/extract-text";
 import { chunkText } from "@/lib/rag/chunk";
 import { generateEmbeddings } from "@/lib/rag/embeddings";
+import { computeCentroid } from "@/lib/rag/clustering";
 import { createEventStream } from "@/lib/stream";
 
 export const runtime = "nodejs";
@@ -98,6 +99,7 @@ export async function POST(req: NextRequest) {
               status: "ready",
               chunkCount: chunks.length,
               charCount: text.length,
+              centroidEmbedding: computeCentroid(embeddings),
             })
             .where(eq(documentsTable.id, doc.id))
             .returning();

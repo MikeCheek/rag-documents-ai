@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Search, Inbox } from "lucide-react";
-import type { DocumentRecord, DocumentStatus } from "@/types";
+import { Search, Inbox, Sparkles, Loader2 } from "lucide-react";
+import type { DocumentRecord, DocumentStatus, ClusterResult } from "@/types";
 import { UploadZone } from "@/components/UploadZone";
 import { DocumentTile } from "@/components/shelf/DocumentTile";
 import { cn } from "@/lib/utils";
@@ -26,6 +26,29 @@ export default function ShelfPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<SortKey>("newest");
+  const [grouping, setGrouping] = useState(false);
+  const [clusters, setClusters] = useState<ClusterResult | null>(null);
+  const [clustersLoading, setClustersLoading] = useState(false);
+  const [clustersError, setClustersError] = useState<string | null>(null);
+
+  async function toggleGrouping() {
+    const next = !grouping;
+    setGrouping(next);
+    if (next && !clusters) {
+      setClustersLoading(true);
+      setClustersError(null);
+      try {
+        const res = await fetch("/api/document-clusters");
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "Failed to group documents");
+        setClusters(json);
+      } catch (err: any) {
+        setClustersError(err?.message ?? "Failed to group documents");
+      } finally {
+        setClustersLoading(false);
+      }
+    }
+  }
 
   async function loadDocuments() {
     try {
@@ -42,6 +65,26 @@ export default function ShelfPage() {
   useEffect(() => {
     loadDocuments();
   }, []);
+
+  // Any change to the document set invalidates a cached grouping — if
+  // grouping is active right now, refetch immediately; otherwise just drop
+  // the cache so the next time it's turned on fetches fresh instead of
+  // showing a stale grouping from before the change.
+  useEffect(() => {
+    setClusters(null);
+    if (!grouping) return;
+    setClustersLoading(true);
+    fetch("/api/document-clusters")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.error) throw new Error(json.error);
+        setClusters(json);
+        setClustersError(null);
+      })
+      .catch((err) => setClustersError(err?.message ?? "Failed to group documents"))
+      .finally(() => setClustersLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documents.length]);
 
   function handleDocumentUpdate(doc: DocumentRecord) {
     setDocuments((prev) => {
@@ -106,6 +149,33 @@ export default function ShelfPage() {
 
   const readyCount = documents.filter((d) => d.status === "ready").length;
   const filtersActive = search.trim() !== "" || statusFilter !== "all" || typeFilter !== "all";
+
+  const groupedSections = useMemo(() => {
+    if (!grouping || !clusters) return null;
+
+    const visibleIds = new Set(visible.map((d) => d.id));
+    const byId = new Map(visible.map((d) => [d.id, d]));
+
+    const sections: { key: string; label: string; docs: DocumentRecord[] }[] = [];
+    const grouped = new Set<string>();
+
+    for (const cluster of clusters.clusters) {
+      const docs = cluster.documentIds
+        .filter((id) => visibleIds.has(id))
+        .map((id) => byId.get(id)!)
+        .filter(Boolean);
+      if (docs.length === 0) continue;
+      docs.forEach((d) => grouped.add(d.id));
+      sections.push({ key: cluster.id, label: cluster.label, docs });
+    }
+
+    const ungrouped = visible.filter((d) => !grouped.has(d.id));
+    if (ungrouped.length > 0) {
+      sections.push({ key: "__ungrouped", label: "Not similar to others", docs: ungrouped });
+    }
+
+    return sections;
+  }, [grouping, clusters, visible]);
 
   return (
     <main className="h-full overflow-y-auto bg-ink-900 text-paper-200">
@@ -184,6 +254,21 @@ export default function ShelfPage() {
               </div>
             )}
 
+            <button
+              onClick={toggleGrouping}
+              disabled={documents.filter((d) => d.status === "ready").length < 2}
+              className={cn(
+                "flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                grouping
+                  ? "border-brass-400/60 text-brass-300 bg-brass-400/5"
+                  : "border-ink-600 text-paper-400 hover:text-paper-200"
+              )}
+              title="Group documents that are similar to each other, computed locally from their embeddings"
+            >
+              {clustersLoading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+              Group similar
+            </button>
+
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortKey)}
@@ -196,6 +281,12 @@ export default function ShelfPage() {
               ))}
             </select>
           </div>
+        )}
+
+        {grouping && clustersError && (
+          <p className="text-sm text-rust-400 border border-rust-500/30 bg-rust-500/10 rounded-lg px-4 py-3 mb-6">
+            {clustersError}
+          </p>
         )}
 
         {loaded && documents.length === 0 && (
@@ -224,17 +315,43 @@ export default function ShelfPage() {
           </div>
         )}
 
-        {visible.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {visible.map((doc) => (
-              <DocumentTile
-                key={doc.id}
-                doc={doc}
-                onDelete={handleDeleteDocument}
-                onRename={handleRenameDocument}
-              />
+        {groupedSections ? (
+          <div className="flex flex-col gap-8">
+            {groupedSections.map((section) => (
+              <div key={section.key}>
+                <div className="flex items-center gap-2 mb-3">
+                  {section.key !== "__ungrouped" && <Sparkles size={13} className="text-brass-300" />}
+                  <h2 className="text-sm text-paper-200 font-medium">{section.label}</h2>
+                  <span className="text-xs text-paper-400">
+                    {section.docs.length} document{section.docs.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {section.docs.map((doc) => (
+                    <DocumentTile
+                      key={doc.id}
+                      doc={doc}
+                      onDelete={handleDeleteDocument}
+                      onRename={handleRenameDocument}
+                    />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
+        ) : (
+          visible.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {visible.map((doc) => (
+                <DocumentTile
+                  key={doc.id}
+                  doc={doc}
+                  onDelete={handleDeleteDocument}
+                  onRename={handleRenameDocument}
+                />
+              ))}
+            </div>
+          )
         )}
 
         {filtersActive && visible.length > 0 && (

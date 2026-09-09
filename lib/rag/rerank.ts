@@ -1,6 +1,7 @@
 import { getCohere } from "./clients";
 import { logApiCall } from "./usage";
 import { bm25Rank } from "./bm25";
+import { cohereLimiter, type WaitCallback } from "./rate-limiter";
 import type { RetrievedChunk } from "./retrieve";
 import type { RerankMode } from "./settings";
 
@@ -24,7 +25,9 @@ export async function rankDocuments(
   query: string,
   documents: RetrievedChunk[],
   limit: number,
-  mode: RerankMode
+  mode: RerankMode,
+  coherePerMinuteCap?: number,
+  onWait?: WaitCallback
 ): Promise<{ results: RankedChunk[]; method: RerankResultMethod }> {
   if (documents.length === 0) {
     return { results: [], method: "vector" };
@@ -45,6 +48,8 @@ export async function rankDocuments(
   }
 
   try {
+    await cohereLimiter.waitForSlot(coherePerMinuteCap, onWait);
+
     const rerank = await cohere.v2.rerank({
       query,
       topN: Math.min(limit, documents.length),

@@ -5,12 +5,12 @@ import type { Components } from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
-import { AlertTriangle, Bot, BookOpen } from "lucide-react";
+import { AlertTriangle, Bot, BookOpen, Clock } from "lucide-react";
 import type { ChatMessage } from "@/types";
 import { normalizeMathDelimiters } from "@/lib/markdown";
 import { PipelineStatus } from "./PipelineStatus";
 import { AgentSteps } from "./AgentSteps";
-import { cn } from "@/lib/utils";
+import { cn, formatDuration, formatClockTime } from "@/lib/utils";
 import "katex/dist/katex.min.css";
 
 // Turn "[1]" style citation markers into markdown links (#cite-1) so
@@ -21,10 +21,20 @@ function prepareContent(text: string): string {
   return normalizeMathDelimiters(text).replace(/\[(\d+)\]/g, "[$1](#cite-$1)");
 }
 
-function ModeBadge({ mode, apiCallCount }: { mode: "rag" | "agent"; apiCallCount?: number }) {
+function ModeBadge({
+  mode,
+  apiCallCount,
+  durationMs,
+  createdAt,
+}: {
+  mode: "rag" | "agent";
+  apiCallCount?: number;
+  durationMs?: number;
+  createdAt?: string;
+}) {
   const isAgent = mode === "agent";
   return (
-    <div className="flex items-center gap-2.5 mb-1.5 text-[10px] uppercase tracking-wide text-paper-400">
+    <div className="flex items-center gap-2.5 mb-1.5 text-[10px] uppercase tracking-wide text-paper-400 flex-wrap">
       <span className="flex items-center gap-1">
         {isAgent ? <Bot size={11} className="text-brass-300" /> : <BookOpen size={11} />}
         {isAgent ? "Agent" : "RAG"}
@@ -34,11 +44,28 @@ function ModeBadge({ mode, apiCallCount }: { mode: "rag" | "agent"; apiCallCount
           {apiCallCount} LLM call{apiCallCount === 1 ? "" : "s"}
         </span>
       )}
+      {typeof durationMs === "number" && (
+        <span className="normal-case text-paper-400/80 flex items-center gap-1">
+          <Clock size={10} />
+          {formatDuration(durationMs)}
+        </span>
+      )}
+      {createdAt && (
+        <span className="normal-case text-paper-400/60">{formatClockTime(createdAt)}</span>
+      )}
     </div>
   );
 }
 
 function AgentStageLine({ stage, detail }: { stage: string; detail?: string }) {
+  if (stage === "rate_limited") {
+    return (
+      <p className="text-sm text-rust-400 font-mono flex items-center gap-1.5">
+        <Clock size={12} className="animate-pulse" />
+        {detail ?? "Waiting for rate limit..."}
+      </p>
+    );
+  }
   const label =
     stage === "calling_tool"
       ? `Calling ${detail}...`
@@ -59,10 +86,15 @@ export function MessageBubble({
 
   if (isUser) {
     return (
-      <div className="flex justify-end animate-rise">
+      <div className="flex flex-col items-end animate-rise">
         <div className="max-w-[75%] rounded-2xl rounded-tr-sm bg-ink-700 px-4 py-2.5 text-[15px] text-paper-200">
           {message.content}
         </div>
+        {message.createdAt && (
+          <span className="text-[10px] text-paper-400/60 mt-1 mr-1">
+            {formatClockTime(message.createdAt)}
+          </span>
+        )}
       </div>
     );
   }
@@ -117,7 +149,12 @@ export function MessageBubble({
           ) : (
             <>
               {message.mode && (
-                <ModeBadge mode={message.mode} apiCallCount={message.apiCallCount} />
+                <ModeBadge
+                  mode={message.mode}
+                  apiCallCount={message.apiCallCount}
+                  durationMs={message.durationMs}
+                  createdAt={message.createdAt}
+                />
               )}
 
               {showStageOnly ? (
@@ -130,6 +167,10 @@ export function MessageBubble({
                 <>
                   {isAgent && hasSteps && (
                     <AgentSteps steps={agentSteps} live={message.isStreaming} />
+                  )}
+
+                  {isAgent && message.isStreaming && !message.content && message.stage && (
+                    <AgentStageLine stage={message.stage} detail={message.stageDetail} />
                   )}
 
                   <div className="prose-answer text-[15px] text-paper-200 leading-relaxed">

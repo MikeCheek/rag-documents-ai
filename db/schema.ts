@@ -20,6 +20,10 @@ export const documentsTable = pgTable("documents", {
   error: text("error"),
   chunkCount: integer("chunk_count").notNull().default(0),
   charCount: integer("char_count").notNull().default(0),
+  // Elementwise mean of all this document's chunk embeddings, computed once
+  // when processing finishes — the basis for similarity-based grouping on
+  // the Shelf, without re-scanning every chunk on every request.
+  centroidEmbedding: vector("centroid_embedding", { dimensions: 384 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -87,6 +91,7 @@ export const chatMessagesTable = pgTable(
     rerankMethod: text("rerank_method"), // "cohere" | "bm25" | "vector" | null — RAG mode only
     agentSteps: jsonb("agent_steps"), // AgentStep[] | null — agent mode only
     apiCallCount: integer("api_call_count"), // # of LLM (OpenRouter) calls made to produce this message
+    durationMs: integer("duration_ms"), // total time taken to produce this message
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -133,6 +138,30 @@ export const agentMemoriesTable = pgTable("agent_memories", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// Granular timing for every stage/call within a turn (RAG pipeline steps
+// or Agent tool calls/LLM round-trips), plus one "total" row per turn — the
+// source data for the Ledger's timing charts. messageId is nullable
+// because timings are collected *during* processing, before the assistant
+// message row exists to reference; it's backfilled right after that insert.
+export const stageTimingsTable = pgTable(
+  "stage_timings",
+  {
+    id: serial("id").primaryKey(),
+    chatId: uuid("chat_id").references(() => chatsTable.id, { onDelete: "cascade" }),
+    messageId: integer("message_id").references(() => chatMessagesTable.id, {
+      onDelete: "cascade",
+    }),
+    mode: text("mode").notNull(), // "rag" | "agent"
+    stage: text("stage").notNull(), // "optimize_query" | "retrieve" | "rerank" | "generate" | "llm_call" | "tool:<name>" | "total" | ...
+    durationMs: integer("duration_ms").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    stageIndex: index("stage_timings_stage_index").on(table.stage),
+    createdIndex: index("stage_timings_created_index").on(table.createdAt),
+  })
+);
+
 // Singleton row (id = 1) holding the user-adjustable free-tier limits shown
 // and checked against on the dashboard.
 export const settingsTable = pgTable("settings", {
@@ -166,3 +195,5 @@ export type InsertToolCallLog = typeof toolCallLogTable.$inferInsert;
 export type SelectToolCallLog = typeof toolCallLogTable.$inferSelect;
 export type InsertAgentMemory = typeof agentMemoriesTable.$inferInsert;
 export type SelectAgentMemory = typeof agentMemoriesTable.$inferSelect;
+export type InsertStageTiming = typeof stageTimingsTable.$inferInsert;
+export type SelectStageTiming = typeof stageTimingsTable.$inferSelect;

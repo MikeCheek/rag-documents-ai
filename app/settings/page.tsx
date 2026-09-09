@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, SlidersHorizontal, Bot, Brain, AlertTriangle } from "lucide-react";
 import type { AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
 import { AgentToolsManager } from "@/components/settings/AgentToolsManager";
 import { WebSearchSettings } from "@/components/settings/WebSearchSettings";
 import { MemoryManager } from "@/components/settings/MemoryManager";
 import { ModelPicker } from "@/components/settings/ModelPicker";
+import { DangerZone } from "@/components/settings/DangerZone";
 import { cn } from "@/lib/utils";
 
 const QUERY_OPTIONS: { value: QueryOptimizationMode; label: string; description: string }[] = [
@@ -50,17 +51,30 @@ const RERANK_OPTIONS: { value: RerankMode; label: string; description: string }[
   },
 ];
 
+const TABS = [
+  { key: "general", label: "General", icon: SlidersHorizontal },
+  { key: "agent", label: "Agent", icon: Bot },
+  { key: "memory", label: "Memory", icon: Brain },
+  { key: "danger", label: "Danger zone", icon: AlertTriangle },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cohereConfigured, setCohereConfigured] = useState<boolean | null>(null);
+  const [tab, setTab] = useState<TabKey>("general");
 
-  useEffect(() => {
+  function loadSettings() {
     fetch("/api/settings")
       .then((res) => res.json())
       .then((json) => setSettings(json.limits))
       .catch((err) => setError(err?.message ?? "Failed to load settings"));
+  }
+
+  useEffect(() => {
+    loadSettings();
 
     fetch("/api/usage")
       .then((res) => res.json())
@@ -93,10 +107,34 @@ export default function SettingsPage() {
     <main className="h-full overflow-y-auto bg-ink-900 text-paper-200">
       <div className="max-w-[820px] mx-auto px-6 py-8">
         <h1 className="font-serif italic text-3xl text-paper-100">The Method</h1>
-        <p className="text-sm text-paper-400 mt-1 mb-8">
+        <p className="text-sm text-paper-400 mt-1 mb-6">
           How each question gets processed before it&apos;s answered — trade API calls
           for retrieval quality wherever you like.
         </p>
+
+        <div className="flex items-center gap-1 border-b border-ink-600 mb-8 overflow-x-auto">
+          {TABS.map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={cn(
+                  "flex items-center gap-1.5 text-sm px-3.5 py-2.5 border-b-2 -mb-px whitespace-nowrap transition-colors",
+                  active
+                    ? t.key === "danger"
+                      ? "border-rust-500 text-rust-400"
+                      : "border-brass-400 text-brass-300"
+                    : "border-transparent text-paper-400 hover:text-paper-200"
+                )}
+              >
+                <Icon size={14} />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
 
         {error && (
           <p className="text-sm text-rust-400 border border-rust-500/30 bg-rust-500/10 rounded-lg px-4 py-3 mb-6">
@@ -108,91 +146,111 @@ export default function SettingsPage() {
           <p className="text-sm text-paper-400 py-10 text-center">Loading...</p>
         ) : (
           <div className="flex flex-col gap-10">
-            <section>
-              <h2 className="text-xs text-paper-400 mb-3">Model</h2>
-              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
-                Used for every OpenRouter call — query rewriting, RAG answers,
-                Agent mode, and compaction. The auto-router
-                (<span className="font-mono">openrouter/free</span>) picks a
-                different free model per request and may not always support
-                tool calling; pin a specific model below for reliable Agent
-                mode.
-              </p>
-              <ModelPicker
-                value={settings.openrouterModel}
-                onSave={(model) => update({ openrouterModel: model })}
-              />
-            </section>
+            {tab === "general" && (
+              <>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Model</h2>
+                  <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                    Used for every OpenRouter call — query rewriting, RAG answers,
+                    Agent mode, and compaction. The auto-router
+                    (<span className="font-mono">openrouter/free</span>) picks a
+                    different free model per request and may not always support
+                    tool calling; pin a specific model below for reliable Agent
+                    mode.
+                  </p>
+                  <ModelPicker
+                    value={settings.openrouterModel}
+                    onSave={(model) => update({ openrouterModel: model })}
+                  />
+                </section>
 
-            <section>
-              <h2 className="text-xs text-paper-400 mb-3">Query optimization</h2>
-              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
-                Runs before retrieval, turning your question into a better search query.
-              </p>
-              <ModeGroup
-                options={QUERY_OPTIONS}
-                value={settings.queryOptimization}
-                onChange={(value) => update({ queryOptimization: value })}
-                saving={savingKey === "queryOptimization"}
-              />
-            </section>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Query optimization</h2>
+                  <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                    Runs before retrieval, turning your question into a better search query.
+                  </p>
+                  <ModeGroup
+                    options={QUERY_OPTIONS}
+                    value={settings.queryOptimization}
+                    onChange={(value) => update({ queryOptimization: value })}
+                    saving={savingKey === "queryOptimization"}
+                  />
+                </section>
 
-            <section>
-              <h2 className="text-xs text-paper-400 mb-3">Reranking</h2>
-              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
-                Runs after retrieval, reordering the candidate passages by relevance
-                before they're sent to the model.
-              </p>
-              <ModeGroup
-                options={RERANK_OPTIONS}
-                value={settings.rerankMethod}
-                onChange={(value) => update({ rerankMethod: value })}
-                saving={savingKey === "rerankMethod"}
-                note={
-                  cohereConfigured === false
-                    ? 'No COHERE_API_KEY is set — "Cohere" will behave the same as "Local (BM25)" until you add one.'
-                    : undefined
-                }
-              />
-            </section>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Reranking</h2>
+                  <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                    Runs after retrieval, reordering the candidate passages by relevance
+                    before they're sent to the model.
+                  </p>
+                  <ModeGroup
+                    options={RERANK_OPTIONS}
+                    value={settings.rerankMethod}
+                    onChange={(value) => update({ rerankMethod: value })}
+                    saving={savingKey === "rerankMethod"}
+                    note={
+                      cohereConfigured === false
+                        ? 'No COHERE_API_KEY is set — "Cohere" will behave the same as "Local (BM25)" until you add one.'
+                        : undefined
+                    }
+                  />
+                </section>
+              </>
+            )}
 
-            <section>
-              <h2 className="text-xs text-paper-400 mb-3">Agent mode</h2>
-              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
-                Switch a chat into Agent mode (top navbar) and the model can call
-                tools — possibly several times — before answering. The step
-                limit below caps the total number of tool calls in a single
-                turn, even if the model requests several at once — each one is
-                a real search or API call, not a free action.
-              </p>
+            {tab === "agent" && (
+              <>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Agent mode</h2>
+                  <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                    Switch a chat into Agent mode (top navbar) and the model can call
+                    tools — possibly several times — before answering. The step
+                    limit below caps the total number of tool calls in a single
+                    turn, even if the model requests several at once — each one is
+                    a real search or API call, not a free action.
+                  </p>
 
-              <MaxStepsInput value={settings.agentMaxSteps} onSave={(v) => update({ agentMaxSteps: v })} />
+                  <MaxStepsInput value={settings.agentMaxSteps} onSave={(v) => update({ agentMaxSteps: v })} />
+                </section>
 
-              <div className="mt-5 mb-5">
-                <h3 className="text-xs text-paper-400 mb-2">Web search</h3>
-                <WebSearchSettings
-                  value={settings.searxngBaseUrl}
-                  onSave={(url) => update({ searxngBaseUrl: url })}
-                />
-              </div>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Web search</h2>
+                  <WebSearchSettings
+                    value={settings.searxngBaseUrl}
+                    onSave={(url) => update({ searxngBaseUrl: url })}
+                  />
+                </section>
 
-              <AgentToolsManager />
-            </section>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Tools</h2>
+                  <AgentToolsManager />
+                </section>
+              </>
+            )}
 
-            <section>
-              <h2 className="text-xs text-paper-400 mb-3">Memory</h2>
-              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
-                Facts and standing instructions Agent mode has saved — carries
-                across every chat, not just the one it was saved from. The
-                current list is given to the model at the start of every
-                Agent-mode turn; it calls <span className="font-mono">remember</span>{" "}
-                when you ask it to remember something, and{" "}
-                <span className="font-mono">forget</span> when you ask it to
-                forget something. You can also add or remove entries directly
-                here.
-              </p>
-              <MemoryManager />
-            </section>
+            {tab === "memory" && (
+              <section>
+                <h2 className="text-xs text-paper-400 mb-3">Memory</h2>
+                <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                  Facts and standing instructions Agent mode has saved — carries
+                  across every chat, not just the one it was saved from. The
+                  current list is given to the model at the start of every
+                  Agent-mode turn; it calls <span className="font-mono">remember</span>{" "}
+                  when you ask it to remember something, and{" "}
+                  <span className="font-mono">forget</span> when you ask it to
+                  forget something. You can also add or remove entries directly
+                  here.
+                </p>
+                <MemoryManager />
+              </section>
+            )}
+
+            {tab === "danger" && (
+              <section>
+                <h2 className="text-xs text-rust-400 mb-3">Danger zone</h2>
+                <DangerZone onDone={loadSettings} />
+              </section>
+            )}
           </div>
         )}
       </div>
@@ -215,7 +273,7 @@ function MaxStepsInput({ value, onSave }: { value: number; onSave: (v: number) =
   }
 
   return (
-    <label className="flex items-center justify-between gap-3 rounded-lg border border-ink-600 bg-ink-800 px-4 py-3 mb-4 max-w-xs">
+    <label className="flex items-center justify-between gap-3 rounded-lg border border-ink-600 bg-ink-800 px-4 py-3 max-w-xs">
       <span className="text-sm text-paper-300">Max tool-call steps per turn</span>
       <input
         type="number"

@@ -85,10 +85,11 @@ export function ChatView({
             rerankMethod: m.rerankMethod ?? undefined,
             agentSteps: m.agentSteps ?? undefined,
             apiCallCount: m.apiCallCount ?? undefined,
+            durationMs: m.durationMs ?? undefined,
           }))
         );
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => {
         if (!cancelled) setLoadingHistory(false);
       });
@@ -175,7 +176,7 @@ export function ChatView({
           } else if (event.type === "agent_step") {
             appendStep(event.step as AgentStep);
           } else if (event.type === "usage") {
-            update({ apiCallCount: event.apiCallCount });
+            update({ apiCallCount: event.apiCallCount, durationMs: event.durationMs });
           } else if (event.type === "token") {
             content += event.content;
             update({ content });
@@ -238,8 +239,8 @@ export function ChatView({
                 readyDocs.length === 0
                   ? "Upload a document to start asking questions..."
                   : mode === "agent"
-                  ? "Ask the agent to do something..."
-                  : "Ask about your documents..."
+                    ? "Ask the agent to do something..."
+                    : "Ask about your documents..."
               }
               className="flex-1 resize-none bg-transparent text-[15px] text-paper-200 placeholder:text-paper-400 outline-none py-1.5 max-h-40"
             />
@@ -256,14 +257,11 @@ export function ChatView({
             {mode === "agent" ? (
               <>
                 AI-generated: it can make mistakes, so check anything important.
-                Agent mode can call tools before answering, and can save things
-                you ask it to remember — that memory carries across chats.
               </>
             ) : (
               <>
                 AI-generated: it can make mistakes, so check anything important.
-                This is a RAG assistant, not an autonomous agent: it retrieves
-                passages and answers fresh each turn rather than taking actions.
+                This is a RAG assistant, not an autonomous agent.
               </>
             )}
           </p>
@@ -303,8 +301,8 @@ function EmptyState({
         {mode === "agent"
           ? "It can search your documents, use its other tools, and show you exactly how it got to an answer."
           : hasDocuments
-          ? "Every answer is grounded in what you've uploaded, with numbered sources you can open and check."
-          : "Add a document on the shelf, then come back here to ask about it."}
+            ? "Every answer is grounded in what you've uploaded, with numbered sources you can open and check."
+            : "Add a document on the shelf, then come back here to ask about it."}
       </p>
       {hasDocuments && (
         <div className="mt-6 flex flex-col gap-2 w-full max-w-sm">

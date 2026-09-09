@@ -2,6 +2,8 @@ import { generateText, tool, jsonSchema, stepCountIs } from "ai";
 import { getDb, toolCallLogTable } from "@/db";
 import { getAgentModel } from "@/lib/rag/clients";
 import { logApiCall } from "@/lib/rag/usage";
+import type { TimingCollector } from "@/lib/rag/timing";
+import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { AgentStep, AppSettings, Source } from "@/types";
 import {
   getAvailableBuiltinTools,
@@ -113,8 +115,10 @@ export async function runAgentLoop(
   summary: string | null,
   chatId: string,
   settings: AppSettings,
-  callbacks: AgentLoopCallbacks
+  callbacks: AgentLoopCallbacks,
+  timing: TimingCollector
 ): Promise<AgentLoopResult> {
+  const loopStartedAt = Date.now();
   const model = getAgentModel(settings.openrouterModel);
   const customTools = await loadEnabledCustomTools();
   const builtinDefs = getAvailableBuiltinTools(settings);
@@ -190,6 +194,7 @@ export async function runAgentLoop(
       if (!cached) {
         resultCache.set(key, outcome);
         logToolCall(chatId, name, outcome.success, durationMs);
+        timing.record(`tool:${name}`, durationMs);
       }
 
       // Register any sources this call surfaced (idempotent per chunk, so
@@ -243,6 +248,11 @@ export async function runAgentLoop(
 
   callbacks.onStage("thinking", `0 of ${maxSteps} tool calls used`);
 
+  // Timed per LLM round-trip via onStepEnd, since generateText drives all
+  // of them internally in one call — this is the only point we get a hook
+  // between rounds to measure each one individually.
+  let lastRoundEndedAt = Date.now();
+
   const result = await generateText({
     model,
     system: systemPrompt,
@@ -255,7 +265,30 @@ export async function runAgentLoop(
     // Generous round-based backstop only — the real, correctness-critical
     // limit is the per-tool-call cap enforced inside each execute() above.
     stopWhen: stepCountIs(maxSteps + 4),
+    // Awaited before every round's model call (including the first) — the
+    // only hook available for gating individual round-trips now that the
+    // SDK drives the multi-step loop internally rather than this file.
+    // Wait time is measured and excluded from the next onStepEnd's
+    // "llm_call" duration (by fast-forwarding lastRoundEndedAt past it),
+    // recorded as its own "rate_limit_wait" entry instead — otherwise a
+    // long queue wait would masquerade as slow model latency on the chart.
+    prepareStep: async () => {
+      const waitStartedAt = Date.now();
+      await openrouterLimiter.waitForSlot(settings.openrouterPerMinuteCap, (waitMs) =>
+        callbacks.onStage("rate_limited", `waiting ${Math.ceil(waitMs / 1000)}s for OpenRouter's rate limit`)
+      );
+      const actuallyWaitedMs = Date.now() - waitStartedAt;
+      if (actuallyWaitedMs > 50) {
+        timing.record("rate_limit_wait", actuallyWaitedMs);
+        lastRoundEndedAt += actuallyWaitedMs;
+      }
+      return undefined;
+    },
     onStepEnd: (step: any) => {
+      const now = Date.now();
+      timing.record("llm_call", now - lastRoundEndedAt);
+      lastRoundEndedAt = now;
+
       if (step?.text && step.text.trim()) {
         const messageStep: AgentStep = { type: "message", content: step.text };
         steps.push(messageStep);
@@ -283,6 +316,8 @@ export async function runAgentLoop(
   callbacks.onSources(sources);
   callbacks.onStage("generating");
   await streamFinalAnswer(finalContent, callbacks.onToken);
+
+  timing.record("total", Date.now() - loopStartedAt);
 
   return { finalContent, steps, sources, llmCallCount: result.steps.length };
 }

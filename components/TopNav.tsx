@@ -3,16 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MessageSquare, LayoutGrid, Orbit, SlidersHorizontal, LayoutDashboard } from "lucide-react";
-import { UsageDots } from "./UsageDots";
 import { ModeToggle } from "./ModeToggle";
 import { cn } from "@/lib/utils";
+import { UsageCircles } from "./UsageCircles";
 
 const NAV_ITEMS = [
   { href: "/", label: "Chat", icon: MessageSquare },
   { href: "/shelf", label: "Shelf", icon: LayoutGrid },
   { href: "/constellation", label: "Constellation", icon: Orbit },
-  { href: "/settings", label: "Method", icon: SlidersHorizontal },
   { href: "/dashboard", label: "Ledger", icon: LayoutDashboard },
+  { href: "/settings", label: "Method", icon: SlidersHorizontal },
 ];
 
 export function TopNav() {
@@ -52,7 +52,7 @@ export function TopNav() {
 
       <div className="flex items-center gap-3 shrink-0 pl-3">
         <ModeToggle />
-        <UsageDots />
+        <UsageCircles />
       </div>
     </header>
   );

@@ -9,6 +9,8 @@ import { createEventStream } from "@/lib/stream";
 import { incrementChunkUsage, logApiCall } from "@/lib/rag/usage";
 import { deriveTitle, loadChatContext } from "@/lib/rag/chats";
 import { maybeCompactChat } from "@/lib/rag/compaction";
+import { TimingCollector, persistTimings } from "@/lib/rag/timing";
+import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { ChatMode } from "@/types";
 
 export const runtime = "nodejs";
@@ -65,6 +67,8 @@ export async function POST(req: NextRequest) {
       const activeChatId: string = chatId;
       const { history, summary } = await loadChatContext(activeChatId);
       const settings = await getSettings();
+      const turnStartedAt = Date.now();
+      const timing = new TimingCollector();
 
       await db.insert(chatMessagesTable).values({
         chatId: activeChatId,
@@ -90,25 +94,35 @@ export async function POST(req: NextRequest) {
             onToken: (content) => send({ type: "token", content }),
             onSources: (sources) =>
               send({ type: "sources", sources, rerankMethod: settings.rerankMethod }),
-          }
+          },
+          timing
         );
 
-        await db.insert(chatMessagesTable).values({
-          chatId: activeChatId,
-          role: "assistant",
-          content: finalContent,
-          mode: "agent",
-          agentSteps: steps.length ? steps : null,
-          sources: sources.length ? sources : null,
-          rerankMethod: sources.length ? settings.rerankMethod : null,
-          apiCallCount: llmCallCount,
-        });
+        const durationMs = Date.now() - turnStartedAt;
+        timing.record("total", durationMs);
+
+        const [assistantMessage] = await db
+          .insert(chatMessagesTable)
+          .values({
+            chatId: activeChatId,
+            role: "assistant",
+            content: finalContent,
+            mode: "agent",
+            agentSteps: steps.length ? steps : null,
+            sources: sources.length ? sources : null,
+            rerankMethod: sources.length ? settings.rerankMethod : null,
+            apiCallCount: llmCallCount,
+            durationMs,
+          })
+          .returning();
         await db
           .update(chatsTable)
           .set({ updatedAt: new Date() })
           .where(eq(chatsTable.id, activeChatId));
 
-        send({ type: "usage", apiCallCount: llmCallCount });
+        persistTimings(activeChatId, assistantMessage.id, "agent", timing.getAll());
+
+        send({ type: "usage", apiCallCount: llmCallCount, durationMs });
         send({ type: "done" });
         maybeCompactChat(activeChatId);
         return;
@@ -122,7 +136,8 @@ export async function POST(req: NextRequest) {
         history,
         summary,
         settings,
-        (stage, detail) => send({ type: "stage", stage, detail })
+        (stage, detail) => send({ type: "stage", stage, detail }),
+        timing
       );
 
       send({ type: "sources", sources, rerankMethod });
@@ -148,50 +163,72 @@ export async function POST(req: NextRequest) {
           ? `${SYSTEM_PROMPT_BASE}\n\nEarlier conversation summary, for context:\n${summary}`
           : SYSTEM_PROMPT_BASE;
 
-        const openrouter = getOpenRouter();
-        const completion = await openrouter.chat.completions.create({
-          model: settings.openrouterModel,
-          stream: true,
-          stream_options: { include_usage: true },
-          temperature: 0.3,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
-            {
-              role: "user",
-              content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
-            },
-          ],
-        });
+        const waitStartedAt = Date.now();
+        await openrouterLimiter.waitForSlot(settings.openrouterPerMinuteCap, (waitMs) =>
+          send({
+            type: "stage",
+            stage: "rate_limited",
+            detail: `waiting ${Math.ceil(waitMs / 1000)}s for OpenRouter's rate limit`,
+          })
+        );
+        const actuallyWaitedMs = Date.now() - waitStartedAt;
+        if (actuallyWaitedMs > 50) timing.record("rate_limit_wait", actuallyWaitedMs);
 
-        let totalTokens: number | undefined;
-        for await (const chunk of completion) {
-          const delta = chunk.choices[0]?.delta?.content;
-          if (delta) {
-            answer += delta;
-            send({ type: "token", content: delta });
+        await timing.time("generate", async () => {
+          const openrouter = getOpenRouter();
+          const completion = await openrouter.chat.completions.create({
+            model: settings.openrouterModel,
+            stream: true,
+            stream_options: { include_usage: true },
+            temperature: 0.3,
+            messages: [
+              { role: "system", content: systemPrompt },
+              ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+              {
+                role: "user",
+                content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
+              },
+            ],
+          });
+
+          let totalTokens: number | undefined;
+          for await (const chunk of completion) {
+            const delta = chunk.choices[0]?.delta?.content;
+            if (delta) {
+              answer += delta;
+              send({ type: "token", content: delta });
+            }
+            if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
           }
-          if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
-        }
 
-        logApiCall("openrouter", "chat_completion", { tokensUsed: totalTokens });
+          logApiCall("openrouter", "chat_completion", { tokensUsed: totalTokens });
+        });
       }
 
-      await db.insert(chatMessagesTable).values({
-        chatId: activeChatId,
-        role: "assistant",
-        content: answer,
-        mode: "rag",
-        sources: sources.length ? sources : null,
-        rerankMethod,
-        apiCallCount: llmCallCount,
-      });
+      const durationMs = Date.now() - turnStartedAt;
+      timing.record("total", durationMs);
+
+      const [assistantMessage] = await db
+        .insert(chatMessagesTable)
+        .values({
+          chatId: activeChatId,
+          role: "assistant",
+          content: answer,
+          mode: "rag",
+          sources: sources.length ? sources : null,
+          rerankMethod,
+          apiCallCount: llmCallCount,
+          durationMs,
+        })
+        .returning();
       await db
         .update(chatsTable)
         .set({ updatedAt: new Date() })
         .where(eq(chatsTable.id, activeChatId));
 
-      send({ type: "usage", apiCallCount: llmCallCount });
+      persistTimings(activeChatId, assistantMessage.id, "rag", timing.getAll());
+
+      send({ type: "usage", apiCallCount: llmCallCount, durationMs });
       send({ type: "done" });
 
       // Fire-and-forget: keeps future turns' context bounded once a chat

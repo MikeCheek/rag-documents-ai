@@ -8,6 +8,7 @@ import { StatCard } from "@/components/dashboard/StatCard";
 import { OpenRouterUsageCard, CohereUsageCard, LocalUsageCard } from "@/components/dashboard/UsageCard";
 import { ChunkUsageGrid } from "@/components/dashboard/ChunkUsageGrid";
 import { ToolUsageGrid } from "@/components/dashboard/ToolUsageGrid";
+import { TimingCharts } from "@/components/dashboard/TimingCharts";
 import { formatBytes } from "@/lib/utils";
 
 export default function DashboardPage() {
@@ -146,6 +147,11 @@ export default function DashboardPage() {
             <section>
               <h2 className="text-xs text-paper-400 mb-3">Tool usage (Agent mode)</h2>
               <ToolUsageGrid rows={data.toolUsage} />
+            </section>
+
+            <section>
+              <h2 className="text-xs text-paper-400 mb-3">Timing</h2>
+              <TimingCharts byStage={data.timingByStage} dailyTrend={data.timingDailyTrend} />
             </section>
           </div>
         )}
