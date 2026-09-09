@@ -3,6 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import { ChevronDown, ChevronRight, Wrench, CheckCircle2, XCircle, MessageCircle } from "lucide-react";
 import type { AgentStep } from "@/types";
@@ -16,7 +17,7 @@ function StepRow({ step }: { step: AgentStep }) {
       <div className="flex items-start gap-2 py-1">
         <MessageCircle size={13} className="text-paper-400 mt-0.5 shrink-0" />
         <div className="text-xs text-paper-300 leading-relaxed prose-answer">
-          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
             {normalizeMathDelimiters(step.content)}
           </ReactMarkdown>
         </div>

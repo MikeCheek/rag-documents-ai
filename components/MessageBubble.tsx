@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import { AlertTriangle, Bot, BookOpen } from "lucide-react";
 import type { ChatMessage } from "@/types";
@@ -20,12 +21,19 @@ function prepareContent(text: string): string {
   return normalizeMathDelimiters(text).replace(/\[(\d+)\]/g, "[$1](#cite-$1)");
 }
 
-function ModeBadge({ mode }: { mode: "rag" | "agent" }) {
+function ModeBadge({ mode, apiCallCount }: { mode: "rag" | "agent"; apiCallCount?: number }) {
   const isAgent = mode === "agent";
   return (
-    <div className="flex items-center gap-1 mb-1.5 text-[10px] uppercase tracking-wide text-paper-400">
-      {isAgent ? <Bot size={11} className="text-brass-300" /> : <BookOpen size={11} />}
-      {isAgent ? "Agent" : "RAG"}
+    <div className="flex items-center gap-2.5 mb-1.5 text-[10px] uppercase tracking-wide text-paper-400">
+      <span className="flex items-center gap-1">
+        {isAgent ? <Bot size={11} className="text-brass-300" /> : <BookOpen size={11} />}
+        {isAgent ? "Agent" : "RAG"}
+      </span>
+      {typeof apiCallCount === "number" && (
+        <span className="normal-case text-paper-400/80">
+          {apiCallCount} LLM call{apiCallCount === 1 ? "" : "s"}
+        </span>
+      )}
     </div>
   );
 }
@@ -90,6 +98,11 @@ export function MessageBubble({
         </a>
       );
     },
+    table: ({ children }) => (
+      <div className="overflow-x-auto -mx-1 px-1">
+        <table>{children}</table>
+      </div>
+    ),
   };
 
   return (
@@ -103,7 +116,9 @@ export function MessageBubble({
             </div>
           ) : (
             <>
-              {message.mode && <ModeBadge mode={message.mode} />}
+              {message.mode && (
+                <ModeBadge mode={message.mode} apiCallCount={message.apiCallCount} />
+              )}
 
               {showStageOnly ? (
                 isAgent ? (
@@ -119,7 +134,7 @@ export function MessageBubble({
 
                   <div className="prose-answer text-[15px] text-paper-200 leading-relaxed">
                     <ReactMarkdown
-                      remarkPlugins={[remarkMath]}
+                      remarkPlugins={[remarkGfm, remarkMath]}
                       rehypePlugins={[rehypeKatex]}
                       components={components}
                     >

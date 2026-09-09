@@ -84,6 +84,7 @@ export function ChatView({
             sources: m.sources ?? undefined,
             rerankMethod: m.rerankMethod ?? undefined,
             agentSteps: m.agentSteps ?? undefined,
+            apiCallCount: m.apiCallCount ?? undefined,
           }))
         );
       })
@@ -173,6 +174,8 @@ export function ChatView({
             update({ sources: event.sources as Source[], rerankMethod: event.rerankMethod });
           } else if (event.type === "agent_step") {
             appendStep(event.step as AgentStep);
+          } else if (event.type === "usage") {
+            update({ apiCallCount: event.apiCallCount });
           } else if (event.type === "token") {
             content += event.content;
             update({ content });
@@ -252,19 +255,15 @@ export function ChatView({
           <p className="max-w-[720px] mx-auto text-center text-[11px] text-paper-400 mt-2 leading-relaxed">
             {mode === "agent" ? (
               <>
-                AI-generated — it can make mistakes, so check anything important.
-                Agent mode can call tools (document search, calculator, and any
-                tools you've added) before answering — its steps are shown live
-                and saved with the message. It remembers earlier messages within
-                this chat, but not across different chats.
+                AI-generated: it can make mistakes, so check anything important.
+                Agent mode can call tools before answering, and can save things
+                you ask it to remember — that memory carries across chats.
               </>
             ) : (
               <>
-                AI-generated — it can make mistakes, so check anything important.
+                AI-generated: it can make mistakes, so check anything important.
                 This is a RAG assistant, not an autonomous agent: it retrieves
                 passages and answers fresh each turn rather than taking actions.
-                It remembers earlier messages within this chat, but not across
-                different chats. Switch to Agent mode (top right) for tool use.
               </>
             )}
           </p>

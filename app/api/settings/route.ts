@@ -80,6 +80,17 @@ export async function PATCH(req: NextRequest) {
       patch.openrouterModel = model;
     }
 
+    if (body?.searxngBaseUrl !== undefined) {
+      const url = String(body.searxngBaseUrl ?? "").trim();
+      if (url && !/^https?:\/\//i.test(url)) {
+        return NextResponse.json(
+          { error: "searxngBaseUrl must start with http:// or https://, or be empty to clear it." },
+          { status: 400 }
+        );
+      }
+      patch.searxngBaseUrl = url || null;
+    }
+
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }

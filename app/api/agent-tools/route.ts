@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, agentToolsTable } from "@/db";
 import { loadAllCustomTools } from "@/lib/agent/custom-tools";
-import { BUILTIN_TOOL_INFO } from "@/lib/agent/tools";
+import { getBuiltinToolInfo } from "@/lib/agent/tools";
+import { getSettings } from "@/lib/rag/settings";
 import type { ToolParameter } from "@/types";
 
 export const runtime = "nodejs";
@@ -12,8 +13,8 @@ const VALID_PARAM_TYPES = ["string", "number", "boolean"];
 
 export async function GET() {
   try {
-    const custom = await loadAllCustomTools();
-    return NextResponse.json({ builtin: BUILTIN_TOOL_INFO, custom });
+    const [custom, settings] = await Promise.all([loadAllCustomTools(), getSettings()]);
+    return NextResponse.json({ builtin: getBuiltinToolInfo(settings), custom });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message ?? "Failed to load tools" },

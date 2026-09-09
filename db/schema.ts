@@ -86,6 +86,7 @@ export const chatMessagesTable = pgTable(
     sources: jsonb("sources"), // Source[] | null — RAG mode only
     rerankMethod: text("rerank_method"), // "cohere" | "bm25" | "vector" | null — RAG mode only
     agentSteps: jsonb("agent_steps"), // AgentStep[] | null — agent mode only
+    apiCallCount: integer("api_call_count"), // # of LLM (OpenRouter) calls made to produce this message
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -121,6 +122,17 @@ export const toolCallLogTable = pgTable("tool_call_log", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Persistent facts/instructions the agent has been asked to remember.
+// Global (not scoped to one chat) and injected into the Agent-mode system
+// prompt on every turn, so memory carries across chats, not just within
+// one — separate from (and in addition to) each chat's own history.
+export const agentMemoriesTable = pgTable("agent_memories", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Singleton row (id = 1) holding the user-adjustable free-tier limits shown
 // and checked against on the dashboard.
 export const settingsTable = pgTable("settings", {
@@ -133,6 +145,7 @@ export const settingsTable = pgTable("settings", {
   rerankMethod: text("rerank_method").notNull().default("cohere"), // "cohere" | "bm25" | "off"
   agentMaxSteps: integer("agent_max_steps").notNull().default(6),
   openrouterModel: text("openrouter_model").notNull().default("openrouter/free"),
+  searxngBaseUrl: text("searxng_base_url"), // null = web search not configured/offered
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -151,3 +164,5 @@ export type InsertAgentTool = typeof agentToolsTable.$inferInsert;
 export type SelectAgentTool = typeof agentToolsTable.$inferSelect;
 export type InsertToolCallLog = typeof toolCallLogTable.$inferInsert;
 export type SelectToolCallLog = typeof toolCallLogTable.$inferSelect;
+export type InsertAgentMemory = typeof agentMemoriesTable.$inferInsert;
+export type SelectAgentMemory = typeof agentMemoriesTable.$inferSelect;

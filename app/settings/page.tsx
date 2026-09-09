@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import type { AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
 import { AgentToolsManager } from "@/components/settings/AgentToolsManager";
+import { WebSearchSettings } from "@/components/settings/WebSearchSettings";
+import { MemoryManager } from "@/components/settings/MemoryManager";
 import { ModelPicker } from "@/components/settings/ModelPicker";
 import { cn } from "@/lib/utils";
 
@@ -166,7 +168,30 @@ export default function SettingsPage() {
 
               <MaxStepsInput value={settings.agentMaxSteps} onSave={(v) => update({ agentMaxSteps: v })} />
 
+              <div className="mt-5 mb-5">
+                <h3 className="text-xs text-paper-400 mb-2">Web search</h3>
+                <WebSearchSettings
+                  value={settings.searxngBaseUrl}
+                  onSave={(url) => update({ searxngBaseUrl: url })}
+                />
+              </div>
+
               <AgentToolsManager />
+            </section>
+
+            <section>
+              <h2 className="text-xs text-paper-400 mb-3">Memory</h2>
+              <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                Facts and standing instructions Agent mode has saved — carries
+                across every chat, not just the one it was saved from. The
+                current list is given to the model at the start of every
+                Agent-mode turn; it calls <span className="font-mono">remember</span>{" "}
+                when you ask it to remember something, and{" "}
+                <span className="font-mono">forget</span> when you ask it to
+                forget something. You can also add or remove entries directly
+                here.
+              </p>
+              <MemoryManager />
             </section>
           </div>
         )}

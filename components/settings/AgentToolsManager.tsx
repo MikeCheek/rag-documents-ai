@@ -270,16 +270,23 @@ export function AgentToolsManager() {
       {!loading && (
         <>
           <div>
-            <p className="text-xs text-paper-400 mb-2">Built in (always available)</p>
+            <p className="text-xs text-paper-400 mb-2">Built in</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {builtin.map((t) => (
                 <div
                   key={t.name}
                   className="rounded-lg border border-ink-600 bg-ink-800 px-3 py-2.5"
                 >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Wrench size={12} className="text-paper-400" />
-                    <span className="text-xs font-mono text-paper-200">{t.name}</span>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Wrench size={12} className="text-paper-400 shrink-0" />
+                      <span className="text-xs font-mono text-paper-200 truncate">{t.name}</span>
+                    </div>
+                    {!t.configured && (
+                      <span className="text-[10px] text-brass-300 border border-brass-400/40 bg-brass-400/10 rounded-full px-1.5 py-0.5 shrink-0">
+                        needs setup
+                      </span>
+                    )}
                   </div>
                   <p className="text-[11px] text-paper-400 leading-relaxed">{t.description}</p>
                 </div>

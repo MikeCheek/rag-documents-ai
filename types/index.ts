@@ -30,6 +30,7 @@ export type ChatMessage = {
   sources?: Source[];
   rerankMethod?: RerankResultMethod | string;
   agentSteps?: AgentStep[];
+  apiCallCount?: number;
   stage?: string;
   stageDetail?: string;
   isStreaming?: boolean;
@@ -92,6 +93,7 @@ export type AppSettings = AppLimits & {
   queryOptimization: QueryOptimizationMode;
   rerankMethod: RerankMode;
   openrouterModel: string;
+  searxngBaseUrl: string | null;
 };
 
 export type ProviderConfigured = {
@@ -139,6 +141,7 @@ export type StoredChatMessage = {
   sources: Source[] | null;
   rerankMethod: RerankResultMethod | string | null;
   agentSteps: AgentStep[] | null;
+  apiCallCount: number | null;
   createdAt: string;
 };
 
@@ -162,9 +165,17 @@ export type AgentToolRecord = {
   updatedAt: string;
 };
 
+export type AgentMemory = {
+  id: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type BuiltinToolInfo = {
   name: string;
   description: string;
+  configured: boolean;
 };
 
 export type ToolUsageRow = {

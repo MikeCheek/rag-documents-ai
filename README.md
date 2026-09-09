@@ -37,6 +37,13 @@ entirely for switching between conversations.
   as a fallback, since plain CommonMark otherwise mangles raw LaTeX badly
   (it silently strips backslashes before punctuation, and underscore
   subscripts collide with markdown's emphasis syntax).
+- **Tables, strikethrough, and task lists render properly** too (via
+  `remark-gfm`) — plain CommonMark (what's left without it) doesn't
+  support pipe-table syntax at all, so a markdown table would otherwise
+  render as one long run-on paragraph with literal `|` characters, since
+  HTML collapses the newlines between rows inside a plain `<p>`. Wide
+  tables scroll horizontally instead of squeezing columns unreadably on
+  narrow chat widths.
 - While an answer is being produced, a live stage indicator shows exactly
   where the pipeline is: reading the question → searching the shelf →
   ranking passages → writing the answer.
@@ -147,6 +154,20 @@ saying which one produced it.
   - `calculator` — arithmetic via a restricted expression parser
     ([`expr-eval`](https://www.npmjs.com/package/expr-eval)), not `eval()`.
   - `current_datetime` — optionally in a specific IANA timezone.
+  - `remember`, `list_memories`, `forget` — persistent memory (see below).
+  - `web_search` — free and open-source web search via
+    [SearXNG](https://docs.searxng.org/), a self-hosted or public
+    metasearch instance, not a paid search API. Only offered to the model
+    at all once a SearXNG URL is configured in Settings → "Agent mode" →
+    "Web search" (a live "Test" button checks it works before you rely on
+    it). Worth knowing before you configure one: SearXNG's JSON output is
+    **off by default**, even on most public instances — they deliberately
+    disable it to deter scraping — so the reliable path is self-hosting
+    (`docker run -p 8080:8080 searxng/searxng`, then add `json` to
+    `search.formats` in its `settings.yml`). Web search results aren't fed
+    into the same `[1]`/`[2]` citation system as document sources (that
+    system is specifically tied to document chunks); they show up in the
+    "Thinking" panel and the model can link to them directly in its answer.
   - **Custom tools**, added from the "Agent mode" section of Settings:
     name, description, HTTP method, a URL template with `{param}`
     placeholders, and a parameter list. Deliberately HTTP-calling rather
@@ -171,12 +192,55 @@ saying which one produced it.
   result appears live as it happens (a collapsible "Thinking" panel on the
   message), and the full sequence is saved with the message — reopening
   the chat later shows exactly the same steps, not just the final text.
+- **Citations get a real Sources panel, same as RAG mode.** Every
+  `search_documents` call across a turn feeds into one shared registry
+  that gives each unique passage a stable citation number — the same
+  passage always gets the same number even if a later search in the same
+  turn returns it again, and numbering stays consistent across multiple
+  searches rather than each call restarting at `[1]`. The final answer's
+  `[1]`, `[2]` badges are clickable and the source-chip row + Sources
+  panel appear under the message exactly like a RAG answer, because
+  they're the same `sources` field and the same UI — Agent mode just
+  populates it from tool calls instead of one fixed retrieval step.
 - **Tool usage is tracked** the same way API usage already is, visible on
   the Ledger.
+- **Persistent memory, global across chats — not tied to any one
+  conversation.** When you ask the agent to remember something, or state a
+  standing preference or instruction ("always...", "never...", a fact
+  about yourself worth keeping), it calls the `remember` tool to actually
+  save it, rather than just claiming it will. The full current memory list
+  is included in the system prompt on *every* Agent-mode turn (so the
+  model always has it without needing to explicitly look it up), and
+  `forget` deletes an entry by id when it's asked to or something's gone
+  stale. This is deliberately separate from a chat's own history/summary —
+  it's meant to persist the way a standing instruction should, independent
+  of which conversation it was given in. Manage it directly (view, add,
+  delete) from Settings → "Memory", not just through the agent.
+- **Every message shows exactly how many LLM calls it took** — RAG or
+  Agent, no exceptions. A small "N LLM call(s)" label sits next to the
+  RAG/Agent badge on every assistant message, persisted with it so it's
+  still there when you reopen the chat later. In RAG mode this is 1 (or 2
+  if query optimization is set to LLM), computed deterministically from
+  settings; in Agent mode it's a live count of every round-trip the tool
+  loop actually made.
 - **Cost tradeoff, stated plainly**: Agent mode uses *more* API calls per
   turn than RAG mode, not fewer — each tool round trip is a real call to
   OpenRouter. This is the opposite direction from minimizing calls; it's a
   genuine tradeoff for the added capability, not a free upgrade.
+- **Built on the Vercel AI SDK** (`ai` + `@openrouter/ai-sdk-provider`)
+  rather than a hand-rolled loop against the raw chat-completions
+  endpoint — the SDK owns the "call model → run tools → feed results back
+  → call model again" mechanics; this app's own logic (citation
+  numbering across searches, the per-tool-call step budget, exact-repeat
+  caching, live step events, tool-call logging, memory injection) lives
+  entirely inside each tool's own `execute()`, unchanged in behavior from
+  before, just now running under the SDK's orchestration instead of a
+  manual `while` loop. This was a deliberate choice over
+  [Mastra](https://mastra.ai): Mastra has grown into a full agent
+  platform (workflows, goals, sub-agent delegation, its own memory/storage
+  system) — 71MB for `@mastra/core` alone versus 8.5MB for `ai` — and
+  adopting it would have meant either fighting its opinions about storage
+  or using ~2% of its surface for what the AI SDK already does directly.
 - **Model compatibility matters here**: `openrouter/free` (the default) is
   an auto-router across many free models, and not all of them support
   OpenAI-style tool calling — if Agent mode's tool calls seem to silently
@@ -284,7 +348,7 @@ Fill in:
 
 ### 4. Set up the database
 
-In the Supabase SQL editor, run these seven files in order:
+In the Supabase SQL editor, run these nine files in order:
 
 ```
 db/migrations/0000_init.sql          -- pgvector, documents, chunks
@@ -294,6 +358,8 @@ db/migrations/0003_rls.sql           -- locks tables out of Supabase's REST API
 db/migrations/0004_local_nlp_settings.sql  -- query optimization / rerank mode settings
 db/migrations/0005_agent_mode.sql    -- agent mode, custom tools, tool call log
 db/migrations/0006_openrouter_model_setting.sql -- moves the model into a live setting
+db/migrations/0007_agent_memory.sql  -- persistent, cross-chat agent memory
+db/migrations/0008_web_search_and_call_counts.sql -- web search setting, per-message LLM call counts
 ```
 
 **Use the SQL editor, not `npm run db:push`, for this project.**
@@ -345,6 +411,9 @@ app/
   api/agent-tools/[id]/route.ts # Enable/disable, edit, or delete a custom tool
   api/agent-model-check/route.ts # Checks the configured model's tool-calling support
   api/openrouter-models/route.ts # Lists free OpenRouter models, flagged by tool support
+  api/agent-memory/route.ts    # List / add a persistent memory entry
+  api/agent-memory/[id]/route.ts # Delete a memory entry
+  api/web-search-check/route.ts # Live-tests a SearXNG URL from Settings
 lib/rag/
   embeddings.ts                # Local Xenova embeddings
   extract-text.ts              # PDF / DOCX / TXT extraction
@@ -361,23 +430,24 @@ lib/rag/
   settings.ts                  # Reads/writes limits + query/rerank/agent settings
   embedding-space.ts           # Nearest-neighbor search + UMAP projection to 3D
 lib/agent/
-  tools.ts                     # Built-in tools: search_documents, list_documents, calculator, current_datetime
+  tools.ts                     # Built-in tools: search_documents, list_documents, calculator, current_datetime, web_search, remember, list_memories, forget
   custom-tools.ts               # Loads custom tools from DB, executes them over HTTP
   ssrf-guard.ts                  # Blocks custom tool calls to private/internal addresses
-  loop.ts                        # The tool-calling agent loop, with step recording
+  loop.ts                        # Agent orchestration on the Vercel AI SDK, with step recording
   model-check.ts                 # Checks the configured model's tool support + lists free models
   tool-usage.ts                   # Aggregates tool_call_log for the dashboard
+  memory.ts                       # CRUD for persistent, cross-chat agent memory
 lib/
   constellation-colors.ts      # Golden-angle per-document color assignment
   markdown.ts                  # Normalizes \( \) / \[ \] LaTeX delimiters to $ / $$
 db/
-  schema.ts                    # Drizzle schema (documents, chunks, chats, chat_messages, agent_tools, tool_call_log, api_calls, settings)
+  schema.ts                    # Drizzle schema (documents, chunks, chats, chat_messages, agent_tools, agent_memories, tool_call_log, api_calls, settings)
   migrations/                  # Raw SQL for the Supabase SQL editor
 components/                    # UI (top navbar, sidebar, chat list, chat, sources panel, etc.)
 components/dashboard/          # Stat cards, editable usage meters, passage/tool usage grids
 components/constellation/      # The three.js/@react-three/fiber 3D scene + collapsible results list
 components/shelf/              # Document tile grid
-components/settings/           # Model picker + agent tools manager
+components/settings/           # Model picker, web search settings, agent tools manager, memory manager
 docs/screenshots/              # Screenshots used in this README
 ```
 
@@ -388,6 +458,14 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
 
 ## Notes
 
+- **The Agent-mode tool-calling loop hasn't been behaviorally tested
+  against a live model.** Its logic (source registry, dedup cache,
+  per-tool-call budget, memory injection) was verified piece by piece and
+  the AI SDK's `tool()`/`jsonSchema()` construction was runtime-tested
+  directly, but there was no `OPENROUTER_API_KEY` or network access to
+  openrouter.ai available while building this, so a real end-to-end
+  tool-calling round trip has never actually run. Test one real Agent-mode
+  conversation after pulling this before trusting it.
 - API routes run on the Node.js runtime (not Edge) since local embeddings,
   PDF/DOCX parsing, and the Postgres client all need it.
 - Supabase free projects pause after ~1 week of inactivity — resume from the

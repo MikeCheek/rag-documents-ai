@@ -27,6 +27,7 @@ export async function getSettings(): Promise<AppSettings> {
       openrouterDailyCap: row.openrouterDailyCap,
       agentMaxSteps: row.agentMaxSteps,
       openrouterModel: row.openrouterModel,
+      searxngBaseUrl: row.searxngBaseUrl,
       queryOptimization: row.queryOptimization as QueryOptimizationMode,
       rerankMethod: row.rerankMethod as RerankMode,
     };
@@ -43,6 +44,7 @@ export async function getSettings(): Promise<AppSettings> {
     queryOptimization: "local",
     rerankMethod: process.env.COHERE_API_KEY ? "cohere" : "bm25",
     openrouterModel: process.env.OPENROUTER_MODEL || "openrouter/free",
+    searxngBaseUrl: process.env.SEARXNG_BASE_URL?.trim() || null,
   };
 
   await db.insert(settingsTable).values({ id: 1, ...seed }).onConflictDoNothing();
@@ -63,6 +65,16 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
       throw new Error("openrouterModel must be a non-empty model id (max 200 characters).");
     }
     patch.openrouterModel = model;
+  }
+  if (patch.searxngBaseUrl !== undefined) {
+    const url = (patch.searxngBaseUrl ?? "").trim();
+    if (!url) {
+      patch.searxngBaseUrl = null; // clears it — web search stops being offered
+    } else if (!/^https?:\/\//i.test(url)) {
+      throw new Error("searxngBaseUrl must start with http:// or https://");
+    } else {
+      patch.searxngBaseUrl = url.replace(/\/+$/, ""); // no trailing slash
+    }
   }
 
   const db = getDb();

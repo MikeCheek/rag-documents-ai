@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
       // a loop before producing a final answer. See lib/agent/loop.ts.
       // ---------------------------------------------------------------
       if (mode === "agent") {
-        const { finalContent, steps } = await runAgentLoop(
+        const { finalContent, steps, sources, llmCallCount } = await runAgentLoop(
           query,
           history,
           summary,
@@ -88,6 +88,8 @@ export async function POST(req: NextRequest) {
             onStage: (stage, detail) => send({ type: "stage", stage, detail }),
             onStep: (step) => send({ type: "agent_step", step }),
             onToken: (content) => send({ type: "token", content }),
+            onSources: (sources) =>
+              send({ type: "sources", sources, rerankMethod: settings.rerankMethod }),
           }
         );
 
@@ -97,12 +99,16 @@ export async function POST(req: NextRequest) {
           content: finalContent,
           mode: "agent",
           agentSteps: steps.length ? steps : null,
+          sources: sources.length ? sources : null,
+          rerankMethod: sources.length ? settings.rerankMethod : null,
+          apiCallCount: llmCallCount,
         });
         await db
           .update(chatsTable)
           .set({ updatedAt: new Date() })
           .where(eq(chatsTable.id, activeChatId));
 
+        send({ type: "usage", apiCallCount: llmCallCount });
         send({ type: "done" });
         maybeCompactChat(activeChatId);
         return;
@@ -123,12 +129,17 @@ export async function POST(req: NextRequest) {
       incrementChunkUsage(sources.map((s) => s.chunkId));
 
       let answer = "";
+      // Deterministic from settings: the pipeline makes exactly one
+      // optimize_query call when that mode is "llm", and the final answer
+      // call only happens when there are sources to answer from.
+      let llmCallCount = settings.queryOptimization === "llm" ? 1 : 0;
 
       if (sources.length === 0) {
         answer =
           "I couldn't find anything relevant in the uploaded documents to answer that. Try uploading a document on this topic, or rephrase your question.";
         send({ type: "token", content: answer });
       } else {
+        llmCallCount++;
         const context = sources
           .map((s, i) => `[${i + 1}] (from "${s.documentName}")\n${s.content}`)
           .join("\n\n---\n\n");
@@ -173,12 +184,14 @@ export async function POST(req: NextRequest) {
         mode: "rag",
         sources: sources.length ? sources : null,
         rerankMethod,
+        apiCallCount: llmCallCount,
       });
       await db
         .update(chatsTable)
         .set({ updatedAt: new Date() })
         .where(eq(chatsTable.id, activeChatId));
 
+      send({ type: "usage", apiCallCount: llmCallCount });
       send({ type: "done" });
 
       // Fire-and-forget: keeps future turns' context bounded once a chat
