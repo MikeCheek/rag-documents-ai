@@ -9,19 +9,50 @@ function sanitizeExtractedText(text: string): string {
   return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
 }
 
+export type ExtractedText = {
+  text: string;
+  /** One entry per page, in order — only for paged formats (PDF). */
+  pages: string[] | null;
+};
+
+/** Rejoins words hyphenated across a line break ("exam-\nple" -> "example"). */
+function dehyphenate(text: string): string {
+  return text.replace(/(\p{L})-\n(\p{Ll})/gu, "$1$2");
+}
+
 export async function extractText(
   buffer: Buffer,
   fileName: string,
   mimeType: string
-): Promise<string> {
+): Promise<ExtractedText> {
   const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-  let text: string;
 
   if (ext === "pdf" || mimeType === "application/pdf") {
-    const pdfParse = (await import("pdf-parse")).default;
-    const result = await pdfParse(buffer);
-    text = result.text;
-  } else if (
+    // unpdf is a serverless build of current pdf.js. (pdf-parse, used
+    // before, bundles pdf.js 1.10 from 2017, which fails to open even
+    // ordinary PDFs with "bad XRef entry".)
+    const { getDocumentProxy, extractText: extractPdfText } = await import("unpdf");
+    // Copied into a fresh array: pdf.js takes ownership of (and detaches)
+    // the buffer it's given.
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    try {
+      const { text: rawPages } = await extractPdfText(pdf, { mergePages: false });
+      const pages = rawPages.map((p) => sanitizeExtractedText(dehyphenate(p)));
+      const text = pages.join("\n\n");
+      if (!text.trim() && pages.length > 0) {
+        throw new Error(
+          `This PDF has ${pages.length} page(s) but no text layer — it's probably scanned images. Run it through OCR first (e.g. \`ocrmypdf input.pdf output.pdf\`) and upload the result.`
+        );
+      }
+      return { text, pages };
+    } finally {
+      // Frees the document and its worker-side resources.
+      await pdf.loadingTask.destroy();
+    }
+  }
+
+  let text: string;
+  if (
     ext === "docx" ||
     mimeType ===
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -43,7 +74,7 @@ export async function extractText(
     );
   }
 
-  return sanitizeExtractedText(text);
+  return { text: sanitizeExtractedText(text), pages: null };
 }
 
 export function isSupportedFile(fileName: string, mimeType: string): boolean {

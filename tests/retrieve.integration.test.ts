@@ -85,6 +85,23 @@ describe.skipIf(!url)("retrieveChunks (hybrid, real Postgres)", () => {
     expect(results.map((r) => r.content)).toContain("Cooking order reference XJ9000 was shipped late.");
   });
 
+  it("limits both halves to the given documents", async () => {
+    const [bioId, miscId] = docIds;
+    const onlyMisc = await retrieveChunks("mitochondria XJ9000", { documentIds: [miscId] });
+    expect(onlyMisc.length).toBeGreaterThan(0);
+    expect(onlyMisc.every((r) => r.documentId === miscId)).toBe(true);
+
+    const onlyBio = await retrieveChunks("mitochondria XJ9000", { documentIds: [bioId] });
+    expect(onlyBio.map((r) => r.documentId)).toEqual([bioId, bioId]);
+  });
+
+  it("resolves document names for the agent's search tool", async () => {
+    const { resolveDocumentNames } = await import("@/lib/agent/tools");
+    expect(await resolveDocumentNames(["BIO.TXT", "misc"])).toEqual([docIds[0], docIds[1]]);
+    await expect(resolveDocumentNames(["draft.txt"])).rejects.toThrow(/No ready document/);
+    await expect(resolveDocumentNames(["txt"])).rejects.toThrow(/several documents/);
+  });
+
   it("uses keywordQuery for the keyword half only", async () => {
     const results = await retrieveChunks("invoice", { keywordQuery: "xj9000" });
     expect(results.map((r) => r.content)).toEqual(["Cooking order reference XJ9000 was shipped late."]);

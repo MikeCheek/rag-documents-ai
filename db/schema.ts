@@ -40,6 +40,10 @@ export const chunksTable = pgTable(
     content: text("content").notNull(),
     embedding: vector("embedding", { dimensions: 384 }),
     usageCount: integer("usage_count").notNull().default(0),
+    // Source PDF page range this chunk came from (0007_chunk_pages.sql);
+    // null for formats without pages.
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

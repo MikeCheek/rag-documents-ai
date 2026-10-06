@@ -8,6 +8,8 @@ const chunk = (chunkId: number, content: string): RetrievedChunk => ({
   documentName: "doc",
   content,
   similarity: 0.5,
+  pageStart: null,
+  pageEnd: null,
 });
 
 describe("bm25Rank", () => {

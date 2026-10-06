@@ -12,6 +12,8 @@ import { maybeCompactChat } from "@/lib/rag/compaction";
 import { TimingCollector, persistTimings } from "@/lib/rag/timing";
 import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { ChatMode } from "@/types";
+import { formatPages } from "@/lib/utils";
+import { describeError } from "@/lib/db-errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +46,11 @@ export async function POST(req: NextRequest) {
       chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
       const mode: ChatMode = body?.mode === "agent" ? "agent" : "rag";
       turnMode = mode;
+      // Optional: restrict this question to specific documents (by id).
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const documentIds: string[] | undefined = Array.isArray(body?.documentIds)
+        ? body.documentIds.filter((id: unknown): id is string => typeof id === "string" && UUID.test(id))
+        : undefined;
 
       if (!query) {
         send({ type: "error", message: "Empty question." });
@@ -109,7 +116,8 @@ export async function POST(req: NextRequest) {
             },
             onSources: (sources, rerankMethod) => send({ type: "sources", sources, rerankMethod }),
           },
-          timing
+          timing,
+          { documentIds }
         );
 
         const durationMs = Date.now() - turnStartedAt;
@@ -152,7 +160,8 @@ export async function POST(req: NextRequest) {
         summary,
         settings,
         (stage, detail) => send({ type: "stage", stage, detail }),
-        timing
+        timing,
+        { documentIds }
       );
 
       send({ type: "sources", sources, rerankMethod });
@@ -171,7 +180,10 @@ export async function POST(req: NextRequest) {
       } else {
         llmCallCount++;
         const context = sources
-          .map((s, i) => `[${i + 1}] (from "${s.documentName}")\n${s.content}`)
+          .map((s, i) => {
+            const pages = formatPages(s.pageStart, s.pageEnd);
+            return `[${i + 1}] (from "${s.documentName}"${pages ? `, ${pages}` : ""})\n${s.content}`;
+          })
           .join("\n\n---\n\n");
 
         const systemPrompt = summary
@@ -253,7 +265,7 @@ export async function POST(req: NextRequest) {
       maybeCompactChat(activeChatId);
     } catch (err: any) {
       console.error("Chat route failed:", err);
-      const message = err?.message ?? "Something went wrong.";
+      const message = describeError(err);
       send({ type: "error", message });
       if (awaitingReply && chatId) {
         await saveFailedTurn(chatId, turnMode, partialAnswer, message);

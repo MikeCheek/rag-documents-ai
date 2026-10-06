@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import type { Source } from "@/types";
-import { cn } from "@/lib/utils";
+import { cn, formatPages } from "@/lib/utils";
 
 export function SourcesDrawer({
   sources,
@@ -69,6 +69,11 @@ export function SourcesDrawer({
               <p className="text-sm font-medium text-paper-200 truncate">
                 {s.documentName}
               </p>
+              {formatPages(s.pageStart, s.pageEnd) && (
+                <span className="text-[11px] font-mono text-paper-400 shrink-0">
+                  {formatPages(s.pageStart, s.pageEnd)}
+                </span>
+              )}
             </div>
             <p className="text-sm text-paper-300 leading-relaxed line-clamp-6">
               {s.content}

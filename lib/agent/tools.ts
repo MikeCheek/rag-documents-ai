@@ -1,5 +1,5 @@
 import { Parser } from "expr-eval";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { getDb, documentsTable } from "@/db";
 import { retrieveChunks } from "@/lib/rag/retrieve";
 import { rankDocuments, type RerankResultMethod } from "@/lib/rag/rerank";
@@ -7,6 +7,7 @@ import { getSettings } from "@/lib/rag/settings";
 import { incrementChunkUsage } from "@/lib/rag/usage";
 import { listMemories, saveMemory, deleteMemory } from "./memory";
 import type { AppSettings, BuiltinToolInfo, Source } from "@/types";
+import { formatPages } from "@/lib/utils";
 
 // Every built-in tool follows the OpenAI-compatible function-calling shape,
 // which OpenRouter passes straight through to whichever underlying model is
@@ -25,6 +26,12 @@ export const BUILTIN_TOOL_DEFINITIONS = [
           limit: {
             type: "number",
             description: "Max number of passages to return (1-10, default 5).",
+          },
+          documents: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional: only search these documents, by name as shown by list_documents (case-insensitive; a unique part of the name is enough). Omit to search everything.",
           },
         },
         required: ["query"],
@@ -152,15 +159,65 @@ export function getAvailableBuiltinTools(settings: AppSettings) {
   );
 }
 
+/** Context for a turn that tools may need beyond their own arguments. */
+export type ToolContext = {
+  /** Documents the user restricted this turn to; undefined = all. */
+  documentIds?: string[];
+};
+
+/**
+ * Resolves document names the model passed to ids: an exact
+ * (case-insensitive) name match wins, otherwise a unique partial match.
+ * Throws with the available names when a name matches nothing, so the
+ * model can correct itself rather than silently searching everything.
+ */
+export async function resolveDocumentNames(names: string[]): Promise<string[]> {
+  const db = getDb();
+  const docs = await db
+    .select({ id: documentsTable.id, name: documentsTable.name })
+    .from(documentsTable)
+    .where(eq(documentsTable.status, "ready"));
+
+  return names.map((raw) => {
+    const name = raw.trim().toLowerCase();
+    const exact = docs.filter((d) => d.name.toLowerCase() === name);
+    const partial = docs.filter((d) => d.name.toLowerCase().includes(name));
+    const match = exact.length === 1 ? exact : partial;
+    if (match.length === 1) return match[0].id;
+    const available = docs.map((d) => d.name).join(", ") || "(none)";
+    throw new Error(
+      match.length === 0
+        ? `No ready document matches "${raw}". Available: ${available}`
+        : `"${raw}" matches several documents (${match.map((d) => d.name).join(", ")}); be more specific.`
+    );
+  });
+}
+
 async function execSearchDocuments(
-  args: { query?: string; limit?: number }
+  args: { query?: string; limit?: number; documents?: unknown },
+  context: ToolContext
 ): Promise<{ result: unknown; sources: Source[]; rerankMethod: RerankResultMethod }> {
   const query = String(args.query ?? "").trim();
   if (!query) throw new Error("query is required");
 
   const limit = Math.min(Math.max(Math.round(args.limit ?? 5), 1), 10);
+  const names = Array.isArray(args.documents)
+    ? args.documents.filter((d): d is string => typeof d === "string" && d.trim() !== "")
+    : [];
+
+  // The user's own scope always applies; names the model passes can only
+  // narrow it further, never widen it.
+  let documentIds = context.documentIds;
+  if (names.length > 0) {
+    const requested = await resolveDocumentNames(names);
+    documentIds = documentIds ? requested.filter((id) => documentIds!.includes(id)) : requested;
+    if (documentIds.length === 0) {
+      throw new Error("Those documents are outside the documents the user limited this conversation to.");
+    }
+  }
+
   const settings = await getSettings();
-  const retrieved = await retrieveChunks(query, { limit: 12 });
+  const retrieved = await retrieveChunks(query, { limit: 12, documentIds });
   const { results, method } = await rankDocuments(
     query,
     retrieved,
@@ -188,6 +245,7 @@ async function execSearchDocuments(
       results: results.map((r, i) => ({
         index: i + 1,
         document: r.documentName,
+        ...(formatPages(r.pageStart, r.pageEnd) ? { pages: formatPages(r.pageStart, r.pageEnd) } : {}),
         excerpt: r.content.slice(0, 500),
         relevance: `${Math.round(Math.max(0, Math.min(1, r.relevanceScore)) * 100)}%`,
       })),
@@ -320,12 +378,13 @@ async function execWebSearch(args: { query?: string; limit?: number }, searxngBa
 export async function executeBuiltinTool(
   name: string,
   args: Record<string, any>,
-  settings: AppSettings
+  settings: AppSettings,
+  context: ToolContext = {}
 ): Promise<BuiltinToolOutcome> {
   try {
     switch (name) {
       case "search_documents": {
-        const { result, sources, rerankMethod } = await execSearchDocuments(args);
+        const { result, sources, rerankMethod } = await execSearchDocuments(args, context);
         return { success: true, result, sources, rerankMethod };
       }
       case "list_documents":

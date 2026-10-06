@@ -1,7 +1,8 @@
-import { and, asc, cosineDistance, desc, eq, sql } from "drizzle-orm";
+import { and, asc, cosineDistance, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb, chunksTable, documentsTable } from "@/db";
 import { generateEmbedding } from "./embeddings";
 import { reciprocalRankFusion } from "./fusion";
+import { isSchemaOutOfDate } from "@/lib/db-errors";
 
 export type RetrievedChunk = {
   chunkId: number;
@@ -9,6 +10,8 @@ export type RetrievedChunk = {
   documentName: string;
   content: string;
   similarity: number;
+  pageStart: number | null;
+  pageEnd: number | null;
 };
 
 export type RetrieveOptions = {
@@ -22,6 +25,8 @@ export type RetrieveOptions = {
    * half only cares about the content words.
    */
   keywordQuery?: string;
+  /** Only search these documents. Omitted or empty = every ready document. */
+  documentIds?: string[];
 };
 
 /**
@@ -39,12 +44,13 @@ export async function retrieveChunks(
   options: RetrieveOptions = {}
 ): Promise<RetrievedChunk[]> {
   const { limit = 12, minSimilarity = 0.25, keywordQuery = query } = options;
+  const documentIds = options.documentIds?.length ? options.documentIds : undefined;
 
   const queryEmbedding = await generateEmbedding(query);
 
   const [vectorHits, keywordHits] = await Promise.all([
-    vectorSearch(queryEmbedding, limit, minSimilarity),
-    keywordSearch(keywordQuery, queryEmbedding, limit),
+    vectorSearch(queryEmbedding, limit, minSimilarity, documentIds),
+    keywordSearch(keywordQuery, queryEmbedding, limit, documentIds),
   ]);
 
   if (keywordHits.length === 0) return vectorHits;
@@ -54,6 +60,13 @@ export async function retrieveChunks(
     .map(({ item }) => item);
 }
 
+function inScope(documentIds: string[] | undefined) {
+  return and(
+    eq(documentsTable.status, "ready"),
+    documentIds ? inArray(chunksTable.documentId, documentIds) : undefined
+  );
+}
+
 function similarityTo(queryEmbedding: number[]) {
   return sql<number>`1 - (${cosineDistance(chunksTable.embedding, queryEmbedding)})`;
 }
@@ -61,7 +74,8 @@ function similarityTo(queryEmbedding: number[]) {
 async function vectorSearch(
   queryEmbedding: number[],
   limit: number,
-  minSimilarity: number
+  minSimilarity: number,
+  documentIds?: string[]
 ): Promise<RetrievedChunk[]> {
   const db = getDb();
   const distance = cosineDistance(chunksTable.embedding, queryEmbedding);
@@ -71,18 +85,28 @@ async function vectorSearch(
   // `1 - distance DESC`) or filtering on it in WHERE silently falls back to
   // a sequential scan over every chunk. The similarity threshold is applied
   // afterwards, in JS, on the handful of rows the index returned.
+  //
+  // Scoped to specific documents, the opposite is wanted: the HNSW index
+  // finds the nearest chunks overall and the document filter is applied
+  // after, so a small document's chunks could all be filtered out of a
+  // 12-row result. Adding 0 makes the sort key an expression the index
+  // can't serve, so Postgres instead does an exact scan of just those
+  // documents' chunks (via the document_id index), which is small.
+  const orderKey = documentIds ? sql`(${distance}) + 0` : distance;
   const rows = await db
     .select({
       chunkId: chunksTable.id,
       documentId: chunksTable.documentId,
       documentName: documentsTable.name,
       content: chunksTable.content,
+      pageStart: chunksTable.pageStart,
+      pageEnd: chunksTable.pageEnd,
       similarity: similarityTo(queryEmbedding),
     })
     .from(chunksTable)
     .innerJoin(documentsTable, eq(chunksTable.documentId, documentsTable.id))
-    .where(eq(documentsTable.status, "ready"))
-    .orderBy(asc(distance))
+    .where(inScope(documentIds))
+    .orderBy(asc(orderKey))
     .limit(limit);
 
   return rows
@@ -108,7 +132,8 @@ let keywordSearchUnavailable = false;
 async function keywordSearch(
   text: string,
   queryEmbedding: number[],
-  limit: number
+  limit: number,
+  documentIds?: string[]
 ): Promise<RetrievedChunk[]> {
   if (keywordSearchUnavailable) return [];
   const tsQuery = toOrTsQuery(text);
@@ -125,15 +150,14 @@ async function keywordSearch(
         documentId: chunksTable.documentId,
         documentName: documentsTable.name,
         content: chunksTable.content,
+        pageStart: chunksTable.pageStart,
+        pageEnd: chunksTable.pageEnd,
         similarity: similarityTo(queryEmbedding),
       })
       .from(chunksTable)
       .innerJoin(documentsTable, eq(chunksTable.documentId, documentsTable.id))
       .where(
-        and(
-          eq(documentsTable.status, "ready"),
-          sql`${sql.raw('"chunks"."content_tsv"')} @@ ${query}`
-        )
+        and(inScope(documentIds), sql`${sql.raw('"chunks"."content_tsv"')} @@ ${query}`)
       )
       .orderBy(desc(rank))
       .limit(limit);
@@ -142,11 +166,14 @@ async function keywordSearch(
   } catch (err: any) {
     // The content_tsv column comes from migration 0006. Until it's been
     // run, degrade to vector-only search instead of failing every query.
-    // 42703 = undefined_column.
-    if (err?.code === "42703" || err?.cause?.code === "42703") {
+    // Only disable for good if it's specifically content_tsv that's
+    // missing; any other missing column (a different pending migration)
+    // fails the vector half too and surfaces as a "run db:migrate" error.
+    const pgMessage = String(err?.cause?.message ?? err?.message ?? "");
+    if (isSchemaOutOfDate(err) && pgMessage.includes("content_tsv")) {
       keywordSearchUnavailable = true;
       console.warn(
-        "Keyword search disabled: chunks.content_tsv is missing. Run db/migrations/0006_hybrid_search.sql to enable hybrid search."
+        "Keyword search disabled: chunks.content_tsv is missing. Run `npm run db:migrate` to enable hybrid search."
       );
       return [];
     }

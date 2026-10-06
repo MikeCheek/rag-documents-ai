@@ -25,7 +25,10 @@ and is reserved entirely for switching between conversations.
 - **Ask questions in plain language;** answers stream in token-by-token with
   inline citations like `[1]`, `[2]` — click one (or the source chip under
   the answer) to open the **Sources panel**, which shows the exact passage,
-  its source document, and a relevance bar.
+  its source document, its page (for PDFs), and a relevance bar.
+- **Limit a question to specific documents** with the "Search in" picker
+  above the input (shown once you have two or more documents). It applies
+  to both RAG and Agent mode until you change it.
 - **Every answer shows how long it took and how many LLM calls that took.**
   A small badge row under each assistant message reads e.g. "Agent",
   "3 LLM calls", "2.4s" as separate elements, deliberately just the
@@ -71,6 +74,13 @@ responsive grid:
 - Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV) from the upload
   zone at the top. Each upload streams live progress: reading → chunking →
   embedding → storing.
+- **PDFs keep their page numbers.** Each passage records the page(s) it
+  came from, shown on the source chips and in the Sources panel ("p. 4",
+  "pp. 4–5") and given to the model alongside the excerpt. Words hyphenated
+  across a line break are rejoined. A scanned PDF with no text layer is
+  rejected with a clear message to run OCR first (e.g. `ocrmypdf`) rather
+  than a generic failure. PDFs uploaded before page tracking existed show
+  no page until re-uploaded.
 - Each tile shows a status badge (processing / ready / failed), passage
   count and extracted character count once ready, file type, and upload
   time.
@@ -191,7 +201,9 @@ one produced it.
   automatically. Built-in tools:
   - `search_documents` — the same retrieval + rerank pipeline as RAG mode,
     but now something the model _chooses_ to call (and can call again with
-    a refined query if the first search wasn't enough).
+    a refined query if the first search wasn't enough). It can pass
+    document names to search only those. Names the model passes can narrow
+    the "Search in" choice but never widen it.
   - `list_documents` — what's uploaded and its status, so the model can
     check before searching.
   - `web_search` — free and open-source web search via
@@ -481,24 +493,36 @@ Fill in:
 
 ### 4. Set up the database
 
-In the Supabase SQL editor, run these files in order:
-
-```
-db/migrations/0000_extensions.sql           -- pgvector
-db/migrations/0001_documents_and_chunks.sql -- documents, chunks (HNSW index), api_calls
-db/migrations/0002_chats_and_messages.sql   -- chats, chat_messages, stage_timings
-db/migrations/0003_agent.sql                -- custom tools, tool call log, agent memory
-db/migrations/0004_settings.sql             -- the settings row
-db/migrations/0005_security.sql             -- locks tables out of Supabase's REST API
-db/migrations/0006_hybrid_search.sql        -- full-text column + GIN index for hybrid search
+```bash
+npm run db:migrate
 ```
 
-Already set up from an earlier version? Just run `0006_hybrid_search.sql`.
-It backfills the full-text column for every existing chunk automatically.
-(`backfill_centroid_embeddings.sql` is a separate one-off utility for
-databases that predate document grouping, not part of the sequence.)
+This applies every file in `db/migrations/` that hasn't been applied yet,
+in order, and records it in a `schema_migrations` table, so you run the
+same command after every `git pull`. It's also safe on a database you set
+up by hand from these files before the command existed: every migration
+is re-runnable, so the first run re-applies them harmlessly and then starts
+tracking.
 
-**Use the SQL editor, not `npm run db:push`, for this project.**
+```
+0000_extensions.sql           -- pgvector
+0001_documents_and_chunks.sql -- documents, chunks (HNSW index), api_calls
+0002_chats_and_messages.sql   -- chats, chat_messages, stage_timings
+0003_agent.sql                -- custom tools, tool call log, agent memory
+0004_settings.sql             -- the settings row
+0005_security.sql             -- locks tables out of Supabase's REST API
+0006_hybrid_search.sql        -- full-text column + GIN index for hybrid search
+0007_chunk_pages.sql          -- PDF page range per chunk, for page citations
+```
+
+If the app finds it's behind (a column it expects is missing), uploads and
+questions fail with "The database schema is out of date. Run
+`npm run db:migrate`". You can still paste the files into the Supabase SQL
+editor in order instead. (`backfill_centroid_embeddings.sql` is a separate
+one-off utility for databases that predate document grouping, not part of
+the sequence.)
+
+**Use `npm run db:migrate` (or the SQL editor), not `npm run db:push`, for this project.**
 `drizzle-kit push` has two separate known incompatibilities with Supabase
 that show up here: it can hang indefinitely ("Pulling schema from
 database...") against the Transaction pooler connection string, since
@@ -507,7 +531,7 @@ needs — and separately, its introspection can crash outright
 (`Cannot read properties of undefined (reading 'replace')` while parsing a
 `CHECK` constraint) against Supabase-managed schemas, unrelated to anything
 in this project's own tables. Neither is a sign anything is wrong with your
-database — just run the SQL files above and skip `db:push` for schema
+database — just use `db:migrate` and skip `db:push` for schema
 changes on this project going forward. The script is left in
 `package.json` in case it works fine on a non-Supabase Postgres instance,
 but it isn't the supported path here.
@@ -524,7 +548,22 @@ navbar), wait for it to say "ready", then ask a question in the chat.
 > The first upload will download the local embedding model (~90MB) — this
 > happens once and is cached on disk.
 
-### 6. Tests
+### 6. Measure retrieval quality (optional)
+
+```bash
+cp eval/questions.example.json eval/questions.json   # then write your own
+npm run eval            # add -- --llm to include LLM query rewriting
+```
+
+Each case is a question plus the document (and optionally a phrase) that
+should be retrieved for it. The script runs every combination of query
+optimization and reranking against your real database and prints hit@1,
+hit@5, and MRR for each, plus which questions were missed. Use it to pick
+settings, or to check that a change actually helped. `eval/questions.json`
+is git-ignored, since it's about your own documents. Runs count toward API
+usage and passage usage like normal questions.
+
+### 7. Tests
 
 ```bash
 npm test           # unit tests: chunking, rank fusion, BM25, network guard, auth, agent loop
@@ -539,6 +578,11 @@ migrations applied (it inserts and then deletes its own rows):
 ```bash
 TEST_DATABASE_URL=postgresql://postgres@localhost:5432/rag_test npm test
 ```
+
+CI (`.github/workflows/ci.yml`) runs the migrations, typecheck, all tests
+(including the database ones, against a `pgvector/pgvector` service
+container), and a production build on every push to `main` and every pull
+request.
 
 ## Security
 
@@ -585,7 +629,7 @@ app/
   api/danger-zone/route.ts     # Destructive resets: chats, documents, usage history, limits, memory
 lib/rag/
   embeddings.ts                # Local Xenova embeddings
-  extract-text.ts              # PDF / DOCX / TXT extraction
+  extract-text.ts              # PDF (per page, via unpdf) / DOCX / TXT extraction
   chunk.ts                     # Sentence-aware overlapping chunking
   local-nlp.ts                 # Free local tokenizer: stopwords + lemmatization (wink-nlp)
   optimize-query.ts            # LLM-based query rewriting (one of 3 modes)

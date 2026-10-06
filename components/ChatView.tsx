@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, BookOpen } from "lucide-react";
+import { DocumentScopePicker } from "./DocumentScopePicker";
 import type {
   AgentStep,
   ChatMessage,
@@ -38,6 +39,8 @@ export function ChatView({
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [input, setInput] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  // Documents the next questions are limited to; empty = all of them.
+  const [scope, setScope] = useState<string[]>([]);
   const [activeCitation, setActiveCitation] = useState<{
     messageId: string;
     index: number;
@@ -50,6 +53,8 @@ export function ChatView({
   const skipNextHistoryLoadRef = useRef(false);
 
   const readyDocs = documents.filter((d) => d.status === "ready");
+  // Drop documents from the scope once they're deleted.
+  const activeScope = scope.filter((id) => readyDocs.some((d) => d.id === id));
   const activeMessage = messages.find((m) => m.id === activeCitation?.messageId);
 
   // Load (or clear) the message history whenever the selected chat changes.
@@ -144,7 +149,12 @@ export function ChatView({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: question, chatId: chatId ?? undefined, mode }),
+        body: JSON.stringify({
+          query: question,
+          chatId: chatId ?? undefined,
+          mode,
+          documentIds: activeScope.length ? activeScope : undefined,
+        }),
       });
       if (!res.body) throw new Error("No response stream from server.");
 
@@ -222,6 +232,7 @@ export function ChatView({
         </div>
 
         <div className="border-t border-ink-600 bg-ink-900 px-6 py-4">
+          <DocumentScopePicker documents={readyDocs} selected={activeScope} onChange={setScope} />
           <form
             onSubmit={(e) => {
               e.preventDefault();

@@ -2,10 +2,11 @@ import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, documentsTable, chunksTable } from "@/db";
 import { extractText, isSupportedFile } from "@/lib/rag/extract-text";
-import { chunkText } from "@/lib/rag/chunk";
+import { chunkPages, chunkText, type PagedChunk } from "@/lib/rag/chunk";
 import { generateEmbeddings } from "@/lib/rag/embeddings";
 import { computeCentroid } from "@/lib/rag/clustering";
 import { createEventStream } from "@/lib/stream";
+import { describeError } from "@/lib/db-errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,14 +65,18 @@ export async function POST(req: NextRequest) {
 
         try {
           const buffer = Buffer.from(await file.arrayBuffer());
-          const text = (await extractText(buffer, file.name, file.type)).trim();
+          const extracted = await extractText(buffer, file.name, file.type);
+          const text = extracted.text.trim();
 
           if (!text) {
             throw new Error("No extractable text was found in this file.");
           }
 
           send({ type: "stage", stage: "chunking", detail: file.name });
-          const chunks = chunkText(text);
+          const pagedChunks: PagedChunk[] = extracted.pages
+            ? chunkPages(extracted.pages)
+            : chunkText(text).map((content) => ({ content, pageStart: null, pageEnd: null }));
+          const chunks = pagedChunks.map((c) => c.content);
 
           if (chunks.length === 0) {
             throw new Error("Text extraction produced no chunks.");
@@ -98,10 +103,12 @@ export async function POST(req: NextRequest) {
 
           send({ type: "stage", stage: "storing", detail: file.name });
           await db.insert(chunksTable).values(
-            chunks.map((content, index) => ({
+            pagedChunks.map((chunk, index) => ({
               documentId: doc.id,
               chunkIndex: index,
-              content,
+              content: chunk.content,
+              pageStart: chunk.pageStart,
+              pageEnd: chunk.pageEnd,
               embedding: embeddings[index],
             }))
           );
@@ -122,7 +129,7 @@ export async function POST(req: NextRequest) {
           console.error(`Failed to process ${file.name}:`, fileErr);
           const [failed] = await db
             .update(documentsTable)
-            .set({ status: "failed", error: fileErr?.message ?? "Processing failed" })
+            .set({ status: "failed", error: describeError(fileErr, "Processing failed") })
             .where(eq(documentsTable.id, doc.id))
             .returning();
           send({ type: "document", document: serializeDoc(failed) });
@@ -132,7 +139,7 @@ export async function POST(req: NextRequest) {
       send({ type: "done" });
     } catch (err: any) {
       console.error("Upload route failed:", err);
-      send({ type: "error", message: err?.message ?? "Upload failed" });
+      send({ type: "error", message: describeError(err, "Upload failed") });
     } finally {
       close();
     }

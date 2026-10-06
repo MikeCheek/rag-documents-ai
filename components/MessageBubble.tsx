@@ -10,7 +10,7 @@ import type { ChatMessage } from "@/types";
 import { normalizeMathDelimiters } from "@/lib/markdown";
 import { PipelineStatus } from "./PipelineStatus";
 import { AgentSteps } from "./AgentSteps";
-import { cn, formatDuration, formatClockTime } from "@/lib/utils";
+import { cn, formatDuration, formatClockTime, formatPages } from "@/lib/utils";
 import "katex/dist/katex.min.css";
 
 // Turn "[1]" style citation markers into markdown links (#cite-1) so
@@ -199,6 +199,11 @@ export function MessageBubble({
                             {i + 1}
                           </span>
                           <span className="max-w-[140px] truncate">{s.documentName}</span>
+                          {formatPages(s.pageStart, s.pageEnd) && (
+                            <span className="text-paper-400 font-mono text-[10px]">
+                              {formatPages(s.pageStart, s.pageEnd)}
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>

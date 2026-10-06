@@ -4,3 +4,6 @@ node_modules
 .env.local
 *.log
 .DS_Store
+
+# Retrieval eval questions (yours, about your documents)
+eval/questions.json

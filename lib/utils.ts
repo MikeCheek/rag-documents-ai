@@ -38,3 +38,9 @@ export function formatClockTime(iso: string): string {
     minute: "2-digit",
   });
 }
+
+/** "p. 4" / "pp. 4–5" for a chunk's page range, or null when it has none. */
+export function formatPages(pageStart?: number | null, pageEnd?: number | null): string | null {
+  if (!pageStart) return null;
+  return pageEnd && pageEnd !== pageStart ? `pp. ${pageStart}–${pageEnd}` : `p. ${pageStart}`;
+}

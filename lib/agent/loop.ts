@@ -112,7 +112,8 @@ export async function runAgentLoop(
   chatId: string,
   settings: AppSettings,
   callbacks: AgentLoopCallbacks,
-  timing: TimingCollector
+  timing: TimingCollector,
+  options: { documentIds?: string[] } = {}
 ): Promise<AgentLoopResult> {
   const model = getAgentModel(settings.openrouterModel);
   const customTools = await loadEnabledCustomTools();
@@ -120,9 +121,12 @@ export async function runAgentLoop(
 
   const memories = await listMemories();
   const memorySection = `Current memory:\n${formatMemoriesForPrompt(memories)}`;
+  const scopeSection = options.documentIds?.length
+    ? `\n\nThe user limited this question to ${options.documentIds.length} specific document(s); search_documents only searches those.`
+    : "";
   const systemPrompt = summary
-    ? `${AGENT_SYSTEM_PROMPT}\n\n${memorySection}\n\nEarlier conversation summary, for context:\n${summary}`
-    : `${AGENT_SYSTEM_PROMPT}\n\n${memorySection}`;
+    ? `${AGENT_SYSTEM_PROMPT}${scopeSection}\n\n${memorySection}\n\nEarlier conversation summary, for context:\n${summary}`
+    : `${AGENT_SYSTEM_PROMPT}${scopeSection}\n\n${memorySection}`;
 
   const steps: AgentStep[] = [];
   const sourceRegistry = new SourceRegistry();
@@ -239,7 +243,9 @@ export async function runAgentLoop(
     toolMap[name] = tool({
       description: def.function.description,
       inputSchema: jsonSchema(def.function.parameters as any),
-      execute: makeExecutor(name, (args) => executeBuiltinTool(name, args, settings)),
+      execute: makeExecutor(name, (args) =>
+        executeBuiltinTool(name, args, settings, { documentIds: options.documentIds })
+      ),
     });
   }
 

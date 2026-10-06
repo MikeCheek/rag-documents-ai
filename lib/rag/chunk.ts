@@ -41,39 +41,52 @@ function splitLongSentence(sentence: string, chunkSize: number): string[] {
   return pieces;
 }
 
-export function chunkText(
-  text: string,
-  {
-    chunkSize = DEFAULT_CHUNK_WORDS,
-    overlap = DEFAULT_OVERLAP_WORDS,
-  }: { chunkSize?: number; overlap?: number } = {}
-): string[] {
-  const units = splitSentences(text).flatMap((s) =>
-    wordCount(s) > chunkSize ? splitLongSentence(s, chunkSize) : [s]
-  );
-  if (units.length === 0) return [];
+export type ChunkOptions = { chunkSize?: number; overlap?: number };
 
-  const chunks: string[] = [];
-  let current: string[] = [];
+export type PagedChunk = {
+  content: string;
+  /** 1-based page range the chunk's text came from; null without pages. */
+  pageStart: number | null;
+  pageEnd: number | null;
+};
+
+type Unit = { text: string; words: number; page: number | null };
+
+function toUnits(text: string, page: number | null, chunkSize: number): Unit[] {
+  return splitSentences(text)
+    .flatMap((s) => (wordCount(s) > chunkSize ? splitLongSentence(s, chunkSize) : [s]))
+    .map((t) => ({ text: t, words: wordCount(t), page }));
+}
+
+function packUnits(units: Unit[], chunkSize: number, overlap: number): PagedChunk[] {
+  const chunks: PagedChunk[] = [];
+  let current: Unit[] = [];
   let currentWords = 0;
 
+  const emit = () => {
+    const pages = current.map((u) => u.page).filter((p): p is number => p !== null);
+    chunks.push({
+      content: current.map((u) => u.text).join(" "),
+      pageStart: pages.length ? Math.min(...pages) : null,
+      pageEnd: pages.length ? Math.max(...pages) : null,
+    });
+  };
+
   for (const unit of units) {
-    const words = wordCount(unit);
-    if (currentWords + words > chunkSize && current.length > 0) {
-      chunks.push(current.join(" "));
+    if (currentWords + unit.words > chunkSize && current.length > 0) {
+      emit();
 
       // Seed the next chunk with trailing sentences worth up to `overlap`
       // words, never the whole previous chunk (that would loop forever).
-      const carried: string[] = [];
+      const carried: Unit[] = [];
       let carriedWords = 0;
       for (let i = current.length - 1; i > 0; i--) {
-        const w = wordCount(current[i]);
-        if (carriedWords + w > overlap) break;
+        if (carriedWords + current[i].words > overlap) break;
         carried.unshift(current[i]);
-        carriedWords += w;
+        carriedWords += current[i].words;
       }
       // Drop the overlap if it would push the next chunk over size anyway.
-      if (carriedWords + words > chunkSize) {
+      if (carriedWords + unit.words > chunkSize) {
         current = [];
         currentWords = 0;
       } else {
@@ -82,9 +95,29 @@ export function chunkText(
       }
     }
     current.push(unit);
-    currentWords += words;
+    currentWords += unit.words;
   }
 
-  if (current.length > 0) chunks.push(current.join(" "));
+  if (current.length > 0) emit();
   return chunks;
+}
+
+export function chunkText(
+  text: string,
+  { chunkSize = DEFAULT_CHUNK_WORDS, overlap = DEFAULT_OVERLAP_WORDS }: ChunkOptions = {}
+): string[] {
+  return packUnits(toUnits(text, null, chunkSize), chunkSize, overlap).map((c) => c.content);
+}
+
+/**
+ * Chunks a paged document (one string per page, in order). Chunks still
+ * flow across page breaks — a passage isn't cut short just because the
+ * page ended — but each one records the page range it spans.
+ */
+export function chunkPages(
+  pages: string[],
+  { chunkSize = DEFAULT_CHUNK_WORDS, overlap = DEFAULT_OVERLAP_WORDS }: ChunkOptions = {}
+): PagedChunk[] {
+  const units = pages.flatMap((text, i) => toUnits(text, i + 1, chunkSize));
+  return packUnits(units, chunkSize, overlap);
 }

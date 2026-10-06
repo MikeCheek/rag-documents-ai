@@ -25,7 +25,8 @@ export async function runRetrievalPipeline(
   summary: string | null,
   settings: AppSettings,
   onStage: (stage: PipelineStage, detail?: string) => void,
-  timing: TimingCollector
+  timing: TimingCollector,
+  options: { documentIds?: string[] } = {}
 ): Promise<PipelineResult> {
   onStage("optimizing", modeLabel(settings.queryOptimization));
   // Two queries, because the two halves of hybrid search want different
@@ -59,7 +60,7 @@ export async function runRetrievalPipeline(
 
   onStage("retrieving", keywordQuery === searchQuery ? searchQuery : `${searchQuery} · keywords: ${keywordQuery}`);
   const retrieved = await timing.time("retrieve", () =>
-    retrieveChunks(searchQuery, { limit: 12, keywordQuery })
+    retrieveChunks(searchQuery, { limit: 12, keywordQuery, documentIds: options.documentIds })
   );
 
   onStage("reranking", `${retrieved.length} candidate chunk(s)`);

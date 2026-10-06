@@ -13,6 +13,9 @@ export type Source = {
   content: string;
   similarity: number;
   relevanceScore: number;
+  /** Source PDF page range; absent/null for unpaged formats and older chunks. */
+  pageStart?: number | null;
+  pageEnd?: number | null;
 };
 
 export type RerankResultMethod = "cohere" | "bm25" | "vector";
