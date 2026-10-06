@@ -108,8 +108,12 @@ and is reserved entirely for switching between conversations.
   where the pipeline is: reading the question → searching the shelf →
   ranking passages → writing the answer (RAG), or a live "Thinking" panel
   of tool calls as they happen (Agent).
-- **Multiple chats**, each with its own persisted history in Postgres —
-  switch between them from the "Chats" tab in the sidebar. Nothing bleeds
+- **Multiple chats**, each with its own persisted history in Postgres and
+  its own URL, `/chat/<id>`: refreshing keeps you in the conversation,
+  back/forward moves between chats, and a link (or bookmark) opens one
+  directly. `/` is a new chat; its URL becomes `/chat/<id>` as soon as the
+  first message creates it, without interrupting the answer. Switch chats
+  from the "Chats" tab in the sidebar; a link to a deleted chat says so. Nothing bleeds
   between chats; reload the page or come back tomorrow and they're all
   still there.
 - **Pin** chats you want to keep at the top, **rename** any chat by

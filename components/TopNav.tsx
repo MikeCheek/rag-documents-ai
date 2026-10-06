@@ -29,7 +29,8 @@ export function TopNav() {
         </Link>
         <nav className="flex items-center gap-1 overflow-x-auto">
           {NAV_ITEMS.map((item) => {
-            const active = pathname === item.href;
+            // "/chat/<id>" is still the Chat tab.
+            const active = pathname === item.href || (item.href === "/" && !!pathname?.startsWith("/chat/"));
             const Icon = item.icon;
             return (
               <Link

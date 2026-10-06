@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isUuid } from "@/lib/utils";
 import { and, asc, eq } from "drizzle-orm";
 import { getDb, chatsTable, chatMessagesTable } from "@/db";
 
@@ -7,6 +8,11 @@ export const dynamic = "force-dynamic";
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
+    // A malformed id (e.g. a mistyped /chat/<id> URL) is simply not found,
+    // rather than a database error.
+    if (!isUuid(params.id)) {
+      return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+    }
     const db = getDb();
     const [chat] = await db.select().from(chatsTable).where(eq(chatsTable.id, params.id));
     if (!chat) {

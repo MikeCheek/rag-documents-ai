@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { ArrowUp, BookOpen, Square } from "lucide-react";
 import { DocumentScopePicker } from "./DocumentScopePicker";
 import type {
@@ -57,6 +58,8 @@ export function ChatView({
   const { mode } = useMode();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // The URL named a chat that doesn't exist (deleted, or a mistyped link).
+  const [notFound, setNotFound] = useState(false);
   const [input, setInput] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   // Documents the next questions are limited to; empty = all of them.
@@ -113,6 +116,7 @@ export function ChatView({
     }
 
     setInput("");
+    setNotFound(false);
 
     if (!chatId) {
       setMessages([]);
@@ -124,8 +128,17 @@ export function ChatView({
     let cancelled = false;
     setLoadingHistory(true);
 
-    fetch(`/api/chats/${chatId}`)
-      .then((res) => res.json())
+    fetch(`/api/chats/${encodeURIComponent(chatId)}`)
+      .then(async (res) => {
+        if (res.status === 404) {
+          if (!cancelled) {
+            setMessages([]);
+            setNotFound(true);
+          }
+          return {};
+        }
+        return res.json();
+      })
       .then((json: { messages?: StoredChatMessage[] }) => {
         if (cancelled || !json.messages) return;
         setMessages(json.messages.map(storedToChatMessage));
@@ -182,6 +195,11 @@ export function ChatView({
   async function send(text: string, editGroupId?: string) {
     const question = text.trim();
     if (!question || isBusy) return;
+    // A chat that turned out not to exist can't be continued: this message
+    // starts a new one (and the flag is cleared, so the next message
+    // continues that new chat rather than starting yet another).
+    const targetChatId = notFound ? null : chatId;
+    setNotFound(false);
 
     setInput("");
     setIsBusy(true);
@@ -229,7 +247,7 @@ export function ChatView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: question,
-          chatId: chatId ?? undefined,
+          chatId: targetChatId ?? undefined,
           mode,
           editGroupId,
           documentIds: activeScope.length ? activeScope : undefined,
@@ -399,6 +417,17 @@ export function ChatView({
           {mode === "agent" && <AgentModelWarning />}
           {loadingHistory ? (
             <p className="text-sm text-paper-400 py-16 text-center">Loading conversation...</p>
+          ) : notFound && messages.length === 0 ? (
+            <div className="py-16 text-center">
+              <p className="font-serif text-xl text-paper-200 mb-2">This chat doesn&apos;t exist</p>
+              <p className="text-sm text-paper-400">
+                It may have been deleted, or the link is mistyped. Ask something below to start a new chat, or{" "}
+                <Link href="/" className="text-brass-300 hover:underline">
+                  go to a new chat
+                </Link>
+                .
+              </p>
+            </div>
           ) : messages.length === 0 ? (
             <EmptyState hasDocuments={readyDocs.length > 0} mode={mode} onPick={send} />
           ) : (

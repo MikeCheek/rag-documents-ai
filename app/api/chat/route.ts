@@ -12,7 +12,7 @@ import { maybeCompactChat } from "@/lib/rag/compaction";
 import { TimingCollector, persistTimings } from "@/lib/rag/timing";
 import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { ChatMode } from "@/types";
-import { formatPages } from "@/lib/utils";
+import { formatPages, isUuid } from "@/lib/utils";
 import { RICH_FORMATTING_GUIDE } from "@/lib/rich/prompt";
 import { describeError } from "@/lib/db-errors";
 import { expandWithNeighbors } from "@/lib/rag/context";
@@ -54,9 +54,8 @@ export async function POST(req: NextRequest) {
       const mode: ChatMode = body?.mode === "agent" ? "agent" : "rag";
       turnMode = mode;
       // Optional: restrict this question to specific documents (by id).
-      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const documentIds: string[] | undefined = Array.isArray(body?.documentIds)
-        ? body.documentIds.filter((id: unknown): id is string => typeof id === "string" && UUID.test(id))
+        ? body.documentIds.filter(isUuid)
         : undefined;
       // Present only when this turn is replacing an edited message —
       // tags both the new user message and its reply so they join the
