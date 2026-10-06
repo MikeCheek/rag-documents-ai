@@ -354,11 +354,29 @@ still report an updating "waiting Xs..." status rather than going silent.
 ## How it works
 
 ```
-Upload:  file -> extract text -> chunk -> embed (local, Xenova) -> Supabase (pgvector)
+Upload:  file -> extract text -> sentence-aware chunks -> embed (local, Xenova) -> Supabase (pgvector)
 
-Chat:    question -> optimize query -> vector search (Supabase)
+Chat:    question -> optimize query -> hybrid search: vector (pgvector) + keyword (Postgres full-text),
+                                       fused with Reciprocal Rank Fusion
                    -> rerank -> answer with citations (streamed)
 ```
+
+- **Chunking** follows paragraph and sentence boundaries, at up to ~180
+  words per chunk with a sentence or two of overlap. The size is set by
+  the embedding model: `all-MiniLM-L6-v2` only reads the first 256 tokens
+  (~190 words) of its input, so anything past that in a longer chunk would
+  be invisible to vector search. Documents uploaded before this change keep
+  their old chunks until re-uploaded.
+- **Hybrid search**: every question runs two searches in parallel, a
+  semantic one (pgvector cosine distance, served by the HNSW index) that
+  finds paraphrases, and a keyword one (Postgres full-text search with a
+  GIN index) that catches exact names, codes, and rare terms a 384-dimension
+  embedding tends to blur. The two ranked lists are merged with
+  [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf),
+  which combines by rank rather than score, so the two different scoring
+  scales need no tuning. Keyword search needs migration `0006_hybrid_search.sql`.
+  Without it the app logs a warning once and falls back to vector-only
+  search.
 
 - **Embeddings** run locally via `@xenova/transformers` (`all-MiniLM-L6-v2`,
   384 dimensions) — no API key, no per-call cost, always on.
@@ -392,10 +410,16 @@ defaults), a normal RAG-mode chat turn makes **exactly one API call** — the
 OpenRouter call that writes the answer. Local query optimization
 (`lib/rag/local-nlp.ts`) uses `wink-nlp`, a pure-JS library with a bundled
 English model, for stopword removal and lemmatization (e.g. "running
-machines" → "run machine") — no network call. Local reranking
-(`lib/rag/bm25.ts`) is a from-scratch BM25 implementation, the same
-lexical-ranking algorithm behind most classic search engines, scored over
-those same lemmatized tokens.
+machines" → "run machine") — no network call. The stripped-down keywords
+feed only the keyword half of hybrid search. The vector half always embeds
+the question as written, since the embedding model was trained on full
+sentences and embeds "run machine" noticeably worse than the original
+question. Local reranking (`lib/rag/bm25.ts`) is a from-scratch BM25
+implementation, the same lexical-ranking algorithm behind most classic
+search engines, scored over those same lemmatized tokens. Its ranking is
+fused with the retrieval order rather than replacing it. BM25 alone would
+sink a passage that paraphrases the question with no words in common,
+however semantically close it is.
 
 **Agent mode is different**: every LLM round-trip in the tool-calling loop
 is its own OpenRouter call (logged separately from the final answer,
@@ -450,24 +474,29 @@ Fill in:
 - `SEARXNG_BASE_URL` — optional, only needed for Agent mode's web search
   (leave blank to not offer that tool at all; see
   [Agent mode](#-agent-mode) above for setup)
+- `APP_PASSWORD` (and optionally `APP_USERNAME`, default `admin`) —
+  **set this anywhere other than your own machine.** It puts the whole app,
+  pages and API alike, behind HTTP Basic auth (see [Security](#security)).
+- `MAX_UPLOAD_MB` — optional per-file upload limit, default 25.
 
 ### 4. Set up the database
 
-In the Supabase SQL editor, run these eleven files in order:
+In the Supabase SQL editor, run these files in order:
 
 ```
-db/migrations/0000_init.sql                     -- pgvector, documents, chunks
-db/migrations/0001_dashboard.sql                -- usage_count column, api_calls log
-db/migrations/0002_chats_and_settings.sql       -- chats, chat_messages, settings
-db/migrations/0003_rls.sql                      -- locks tables out of Supabase's REST API
-db/migrations/0004_local_nlp_settings.sql       -- query optimization / rerank mode settings
-db/migrations/0005_agent_mode.sql               -- agent mode, custom tools, tool call log
-db/migrations/0006_openrouter_model_setting.sql -- moves the model into a live setting
-db/migrations/0007_agent_memory.sql             -- persistent, cross-chat agent memory
-db/migrations/0008_web_search_and_call_counts.sql -- web search setting, per-message LLM call counts
-db/migrations/0009_timings.sql                  -- per-stage timing log + per-message duration
-db/migrations/0010_clustering_and_danger_zone.sql -- document centroid embeddings for similarity grouping
+db/migrations/0000_extensions.sql           -- pgvector
+db/migrations/0001_documents_and_chunks.sql -- documents, chunks (HNSW index), api_calls
+db/migrations/0002_chats_and_messages.sql   -- chats, chat_messages, stage_timings
+db/migrations/0003_agent.sql                -- custom tools, tool call log, agent memory
+db/migrations/0004_settings.sql             -- the settings row
+db/migrations/0005_security.sql             -- locks tables out of Supabase's REST API
+db/migrations/0006_hybrid_search.sql        -- full-text column + GIN index for hybrid search
 ```
+
+Already set up from an earlier version? Just run `0006_hybrid_search.sql`.
+It backfills the full-text column for every existing chunk automatically.
+(`backfill_centroid_embeddings.sql` is a separate one-off utility for
+databases that predate document grouping, not part of the sequence.)
 
 **Use the SQL editor, not `npm run db:push`, for this project.**
 `drizzle-kit push` has two separate known incompatibilities with Supabase
@@ -494,6 +523,37 @@ navbar), wait for it to say "ready", then ask a question in the chat.
 
 > The first upload will download the local embedding model (~90MB) — this
 > happens once and is cached on disk.
+
+### 6. Tests
+
+```bash
+npm test           # unit tests: chunking, rank fusion, BM25, network guard, auth, agent loop
+npm run typecheck
+```
+
+The agent-loop tests drive the real Vercel AI SDK loop with the SDK's mock
+model, so they need no API key. The hybrid-retrieval integration test runs
+only when `TEST_DATABASE_URL` points at a Postgres with pgvector and all
+migrations applied (it inserts and then deletes its own rows):
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres@localhost:5432/rag_test npm test
+```
+
+## Security
+
+- **Authentication** is opt-in via `APP_PASSWORD` (`middleware.ts`). Without
+  it, anyone who can reach the server can read your documents, spend your
+  OpenRouter quota, register custom tools, and use the Danger Zone. Fine on
+  `localhost`, not fine anywhere else. Basic auth sends the password with
+  every request, so serve the app over HTTPS when it's not on localhost.
+- **Custom tools** make model-initiated HTTP requests, so they're guarded
+  against reaching private/internal addresses (`lib/agent/ssrf-guard.ts`).
+  The address check runs inside the socket's own DNS lookup, so a hostname
+  can't resolve to a public IP when checked and a private one when
+  connecting (DNS rebinding). Redirects are followed manually, with every
+  hop re-checked, and a tool's static headers (e.g. an API key) aren't
+  forwarded to a different origin.
 
 ## Project structure
 
@@ -526,11 +586,12 @@ app/
 lib/rag/
   embeddings.ts                # Local Xenova embeddings
   extract-text.ts              # PDF / DOCX / TXT extraction
-  chunk.ts                     # Overlapping word-based chunking
+  chunk.ts                     # Sentence-aware overlapping chunking
   local-nlp.ts                 # Free local tokenizer: stopwords + lemmatization (wink-nlp)
   optimize-query.ts            # LLM-based query rewriting (one of 3 modes)
   bm25.ts                      # Free local BM25 reranking (one of 3 modes)
-  retrieve.ts                  # pgvector cosine-similarity search
+  retrieve.ts                  # Hybrid search: pgvector + Postgres full-text, fused
+  fusion.ts                    # Reciprocal Rank Fusion
   rerank.ts                    # Dispatches to Cohere / BM25 / off, with fallback
   pipeline.ts                  # Orchestrates the above using current settings, timed at each stage
   usage.ts                     # Logs API calls, passage usage, usage aggregation
@@ -573,14 +634,15 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
 
 ## Notes
 
-- **The Agent-mode tool-calling loop hasn't been behaviorally tested
-  against a live model.** Its logic (source registry, dedup cache,
-  per-tool-call budget, memory injection, timing) was verified piece by
-  piece and the AI SDK's `tool()`/`jsonSchema()` construction was
-  runtime-tested directly, but there was no `OPENROUTER_API_KEY` or network
-  access to openrouter.ai available while building this, so a real
-  end-to-end tool-calling round trip has never actually run. Test one real
-  Agent-mode conversation after pulling this before trusting it.
+- **The Agent-mode loop is tested against the AI SDK's mock model, not a
+  live one** (`tests/agent-loop.test.ts`: streaming, discarding preamble
+  before a tool call, the step limit, error propagation). Whether a given
+  OpenRouter model calls tools well is still model-dependent; see the
+  compatibility note under [Agent mode](#-agent-mode).
+- **A failed or interrupted turn is still saved** with whatever had been
+  streamed plus the error, so reopening the chat shows what happened
+  instead of an unanswered question. Closing the tab mid-answer doesn't
+  abort the turn. It finishes server-side and is there when you come back.
 - API routes run on the Node.js runtime (not Edge) since local embeddings,
   PDF/DOCX parsing, and the Postgres client all need it.
 - Supabase free projects pause after ~1 week of inactivity — resume from

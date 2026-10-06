@@ -11,6 +11,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+// Each file is read fully into memory and processed within this request,
+// so an unbounded upload could exhaust the server's memory or run past
+// maxDuration. Override with MAX_UPLOAD_MB in .env.local.
+const MAX_UPLOAD_BYTES = (Number(process.env.MAX_UPLOAD_MB) || 25) * 1024 * 1024;
+
 export async function POST(req: NextRequest) {
   const { stream, send, close } = createEventStream();
 
@@ -32,6 +37,14 @@ export async function POST(req: NextRequest) {
           send({
             type: "error",
             message: `${file.name}: unsupported file type. Use PDF, DOCX, TXT, MD, or CSV.`,
+          });
+          continue;
+        }
+
+        if (file.size > MAX_UPLOAD_BYTES) {
+          send({
+            type: "error",
+            message: `${file.name}: ${(file.size / 1024 / 1024).toFixed(1)}MB is over the ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB upload limit (MAX_UPLOAD_MB).`,
           });
           continue;
         }

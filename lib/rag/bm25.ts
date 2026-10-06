@@ -4,10 +4,16 @@
 // already used for query optimization. Not as good at understanding
 // paraphrases/synonyms as Cohere's neural reranker, but a solid, instant,
 // free alternative or fallback.
+//
+// BM25 alone only sees word overlap, so on its own it would push a passage
+// that paraphrases the question (zero shared words) to the bottom, however
+// semantically close it is. Its ranking is therefore fused with the
+// retrieval order (Reciprocal Rank Fusion) rather than replacing it.
 
 import { getLemmaTokens } from "./local-nlp";
 import type { RetrievedChunk } from "./retrieve";
 import type { RankedChunk } from "./rerank";
+import { reciprocalRankFusion } from "./fusion";
 
 const K1 = 1.5;
 const B = 0.75;
@@ -58,15 +64,20 @@ export async function bm25Rank(
     return { doc, score };
   });
 
-  const maxScore = Math.max(...scored.map((s) => s.score), 1e-9);
-
-  return scored
+  // Chunks with no query term at all don't get a lexical rank; they keep
+  // only their retrieval rank in the fusion below.
+  const lexicalOrder = scored
+    .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(({ doc, score }) => ({
-      ...doc,
-      // Normalized 0-1 against this batch's own top score, so the UI's
-      // relevance bar stays meaningful regardless of BM25's unbounded scale.
-      relevanceScore: Math.max(0, score / maxScore),
-    }));
+    .map((s) => s.doc);
+
+  const fused = reciprocalRankFusion([documents, lexicalOrder], (d) => d.chunkId);
+  const maxScore = fused[0]?.score || 1;
+
+  return fused.slice(0, limit).map(({ item, score }) => ({
+    ...item,
+    // Normalized 0-1 against this batch's own top score, so the UI's
+    // relevance bar stays meaningful regardless of the fused scale.
+    relevanceScore: score / maxScore,
+  }));
 }

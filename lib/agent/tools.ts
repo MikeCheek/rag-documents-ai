@@ -2,7 +2,7 @@ import { Parser } from "expr-eval";
 import { desc } from "drizzle-orm";
 import { getDb, documentsTable } from "@/db";
 import { retrieveChunks } from "@/lib/rag/retrieve";
-import { rankDocuments } from "@/lib/rag/rerank";
+import { rankDocuments, type RerankResultMethod } from "@/lib/rag/rerank";
 import { getSettings } from "@/lib/rag/settings";
 import { incrementChunkUsage } from "@/lib/rag/usage";
 import { listMemories, saveMemory, deleteMemory } from "./memory";
@@ -154,14 +154,14 @@ export function getAvailableBuiltinTools(settings: AppSettings) {
 
 async function execSearchDocuments(
   args: { query?: string; limit?: number }
-): Promise<{ result: unknown; sources: Source[] }> {
+): Promise<{ result: unknown; sources: Source[]; rerankMethod: RerankResultMethod }> {
   const query = String(args.query ?? "").trim();
   if (!query) throw new Error("query is required");
 
   const limit = Math.min(Math.max(Math.round(args.limit ?? 5), 1), 10);
   const settings = await getSettings();
   const retrieved = await retrieveChunks(query, { limit: 12 });
-  const { results } = await rankDocuments(
+  const { results, method } = await rankDocuments(
     query,
     retrieved,
     limit,
@@ -175,6 +175,7 @@ async function execSearchDocuments(
     return {
       result: { results: [], note: "No relevant passages found for this query." },
       sources: [],
+      rerankMethod: method,
     };
   }
 
@@ -192,6 +193,7 @@ async function execSearchDocuments(
       })),
     },
     sources: results,
+    rerankMethod: method,
   };
 }
 
@@ -255,7 +257,12 @@ async function execForget(args: { id?: string }) {
   return deleted ? { deleted: true, id } : { deleted: false, error: "No memory found with that id." };
 }
 
-export type BuiltinToolOutcome = { success: boolean; result: unknown; sources?: Source[] };
+export type BuiltinToolOutcome = {
+  success: boolean;
+  result: unknown;
+  sources?: Source[];
+  rerankMethod?: RerankResultMethod;
+};
 
 const WEB_SEARCH_TIMEOUT_MS = 10_000;
 const WEB_SEARCH_MAX_SNIPPET_CHARS = 500;
@@ -318,8 +325,8 @@ export async function executeBuiltinTool(
   try {
     switch (name) {
       case "search_documents": {
-        const { result, sources } = await execSearchDocuments(args);
-        return { success: true, result, sources };
+        const { result, sources, rerankMethod } = await execSearchDocuments(args);
+        return { success: true, result, sources, rerankMethod };
       }
       case "list_documents":
         return { success: true, result: await execListDocuments() };

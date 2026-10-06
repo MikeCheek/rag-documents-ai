@@ -5,7 +5,8 @@
 export type StreamEvent =
   | { type: "stage"; stage: string; detail?: string }
   | { type: "token"; content: string }
-  | { type: "sources"; sources: unknown[]; rerankMethod: string }
+  | { type: "token_reset" }
+  | { type: "sources"; sources: unknown[]; rerankMethod: string | null }
   | { type: "agent_step"; step: unknown }
   | { type: "usage"; apiCallCount: number; durationMs: number }
   | { type: "document"; document: unknown }
@@ -21,14 +22,34 @@ export function createEventStream() {
     start(controller) {
       controllerRef = controller;
     },
+    cancel() {
+      open = false;
+    },
   });
 
+  // Once the client disconnects (closed tab, navigated away) the stream is
+  // cancelled and enqueue/close throw. Swallowing that lets the server
+  // finish the turn and save it, so it's there when the chat is reopened,
+  // instead of the error aborting it halfway through.
+  let open = true;
+
   function send(event: StreamEvent) {
-    controllerRef?.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+    if (!open) return;
+    try {
+      controllerRef?.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+    } catch {
+      open = false;
+    }
   }
 
   function close() {
-    controllerRef?.close();
+    if (!open) return;
+    open = false;
+    try {
+      controllerRef?.close();
+    } catch {
+      // Already closed or cancelled by the client.
+    }
   }
 
   return { stream, send, close };

@@ -1,8 +1,9 @@
-import { generateText, tool, jsonSchema, stepCountIs } from "ai";
+import { streamText, tool, jsonSchema, stepCountIs } from "ai";
 import { getDb, toolCallLogTable } from "@/db";
 import { getAgentModel } from "@/lib/rag/clients";
 import { logApiCall } from "@/lib/rag/usage";
 import type { TimingCollector } from "@/lib/rag/timing";
+import type { RerankResultMethod } from "@/lib/rag/rerank";
 import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { AgentStep, AppSettings, Source } from "@/types";
 import {
@@ -16,7 +17,7 @@ import { listMemories, formatMemoriesForPrompt } from "./memory";
 export { getBuiltinToolInfo };
 
 // Orchestrates Agent mode's tool-calling loop using the Vercel AI SDK
-// (`generateText` with `tools`), rather than a hand-rolled while-loop
+// (`streamText` with `tools`), rather than a hand-rolled while-loop
 // against the raw OpenRouter chat-completions endpoint. The SDK owns the
 // "call model -> run tools -> feed results back -> call model again"
 // mechanics; everything specific to this app (citation numbering across
@@ -37,17 +38,26 @@ export type AgentLoopCallbacks = {
   onStage: (stage: string, detail?: string) => void;
   onStep: (step: AgentStep) => void;
   onToken: (content: string) => void;
-  onSources: (sources: Source[]) => void;
+  /** Discard the tokens streamed so far: they turned out to be preamble to
+   *  a tool call, not the final answer. */
+  onTokenReset: () => void;
+  onSources: (sources: Source[], rerankMethod: RerankResultMethod | null) => void;
 };
 
 export type AgentLoopResult = {
   finalContent: string;
   steps: AgentStep[];
   sources: Source[];
+  rerankMethod: RerankResultMethod | null;
   llmCallCount: number;
 };
 
-type ToolOutcome = { success: boolean; result: unknown; sources?: Source[] };
+type ToolOutcome = {
+  success: boolean;
+  result: unknown;
+  sources?: Source[];
+  rerankMethod?: RerankResultMethod;
+};
 
 // Accumulates sources across every search_documents call in a single turn
 // and assigns each unique chunk one stable, turn-wide citation number —
@@ -86,20 +96,6 @@ function renumberSearchResult(result: unknown, globalIndices: number[]): unknown
   return result;
 }
 
-async function streamFinalAnswer(content: string, onToken: (chunk: string) => void) {
-  if (!content) return;
-  // generateText's result is the full final text at once (not incrementally
-  // streamed), so it's revealed in small chunks with a short delay between
-  // them purely so the UI's existing token-by-token rendering matches RAG
-  // mode's real streaming.
-  const words = content.split(/(\s+)/);
-  const CHUNK_SIZE = 3;
-  for (let i = 0; i < words.length; i += CHUNK_SIZE) {
-    onToken(words.slice(i, i + CHUNK_SIZE).join(""));
-    await new Promise((resolve) => setTimeout(resolve, 12));
-  }
-}
-
 async function logToolCall(chatId: string, toolName: string, success: boolean, durationMs: number) {
   try {
     const db = getDb();
@@ -118,7 +114,6 @@ export async function runAgentLoop(
   callbacks: AgentLoopCallbacks,
   timing: TimingCollector
 ): Promise<AgentLoopResult> {
-  const loopStartedAt = Date.now();
   const model = getAgentModel(settings.openrouterModel);
   const customTools = await loadEnabledCustomTools();
   const builtinDefs = getAvailableBuiltinTools(settings);
@@ -131,6 +126,7 @@ export async function runAgentLoop(
 
   const steps: AgentStep[] = [];
   const sourceRegistry = new SourceRegistry();
+  let rerankMethod: RerankResultMethod | null = null;
   const maxSteps = settings.agentMaxSteps;
 
   // The cap is enforced per *tool call*, not per LLM round-trip, inside
@@ -141,11 +137,17 @@ export async function runAgentLoop(
   let toolCallsUsed = 0;
   const resultCache = new Map<string, ToolOutcome>();
 
+  // Built-in search queries are case-insensitive, so "Foo" and "foo" are
+  // the same call. Custom tools' APIs may well be case-sensitive, so their
+  // arguments are only trimmed.
+  const builtinNames = new Set(builtinDefs.map((d) => d.function.name));
   function dedupeKey(name: string, args: Record<string, unknown>): string {
+    const caseInsensitive = builtinNames.has(name);
     const normalized: Record<string, unknown> = {};
     for (const key of Object.keys(args).sort()) {
       const v = args[key];
-      normalized[key] = typeof v === "string" ? v.trim().toLowerCase() : v;
+      normalized[key] =
+        typeof v === "string" ? (caseInsensitive ? v.trim().toLowerCase() : v.trim()) : v;
     }
     return `${name}:${JSON.stringify(normalized)}`;
   }
@@ -204,6 +206,10 @@ export async function runAgentLoop(
       if (outcome.sources && outcome.sources.length > 0) {
         const globalIndices = sourceRegistry.register(outcome.sources);
         displayResult = renumberSearchResult(outcome.result, globalIndices);
+        if (outcome.rerankMethod) rerankMethod = outcome.rerankMethod;
+        // Sent as they're found, so citation badges in the answer are
+        // clickable as soon as it starts streaming.
+        callbacks.onSources(sourceRegistry.getAll(), rerankMethod);
       }
 
       const resultForModel = cached
@@ -248,12 +254,12 @@ export async function runAgentLoop(
 
   callbacks.onStage("thinking", `0 of ${maxSteps} tool calls used`);
 
-  // Timed per LLM round-trip via onStepEnd, since generateText drives all
+  // Timed per LLM round-trip via onStepEnd, since streamText drives all
   // of them internally in one call — this is the only point we get a hook
   // between rounds to measure each one individually.
   let lastRoundEndedAt = Date.now();
 
-  const result = await generateText({
+  const result = streamText({
     model,
     system: systemPrompt,
     messages: [
@@ -284,12 +290,18 @@ export async function runAgentLoop(
       }
       return undefined;
     },
+    // Errors arrive as "error" parts in fullStream below, which rethrows
+    // them; the SDK's default handler would only log them a second time.
+    onError: () => {},
     onStepEnd: (step: any) => {
       const now = Date.now();
       timing.record("llm_call", now - lastRoundEndedAt);
       lastRoundEndedAt = now;
 
-      if (step?.text && step.text.trim()) {
+      // Text from a round that went on to call tools is the model thinking
+      // out loud, not the answer — keep it in the Thinking panel.
+      const calledTools = step?.toolCalls && step.toolCalls.length > 0;
+      if (calledTools && step?.text && step.text.trim()) {
         const messageStep: AgentStep = { type: "message", content: step.text };
         steps.push(messageStep);
         callbacks.onStep(messageStep);
@@ -297,27 +309,53 @@ export async function runAgentLoop(
     },
   });
 
+  // Text is streamed to the client as it's generated. Any round can emit
+  // text, and whether it was the final answer is only known once that
+  // round ends: if it ends by calling tools, what was streamed was
+  // preamble, so the client is told to discard it.
+  let streamedThisRound = false;
+  for await (const part of result.fullStream) {
+    if (part.type === "start-step") {
+      streamedThisRound = false;
+    } else if (part.type === "text-delta") {
+      if (!streamedThisRound) callbacks.onStage("generating");
+      streamedThisRound = true;
+      callbacks.onToken(part.text);
+    } else if (part.type === "finish-step") {
+      if (part.finishReason === "tool-calls" && streamedThisRound) callbacks.onTokenReset();
+    } else if (part.type === "error") {
+      throw part.error instanceof Error ? part.error : new Error(String(part.error));
+    }
+  }
+
+  const resultSteps = await result.steps;
+  const text = await result.text;
+
   // One logApiCall per LLM round-trip actually made, purposed by whether
   // that round produced tool calls (still deciding) or not (the final
   // answer) — keeps the Ledger's "Answers generated" stat accurate.
-  for (const step of result.steps) {
+  for (const step of resultSteps) {
     const isFinalStep = !step.toolCalls || step.toolCalls.length === 0;
     logApiCall("openrouter", isFinalStep ? "chat_completion" : "agent_step", {
       tokensUsed: step.usage?.totalTokens,
     });
   }
 
-  const finalContent =
-    result.text && result.text.trim()
-      ? result.text
-      : "I wasn't able to finish within the step limit.";
+  const lastStep = resultSteps[resultSteps.length - 1];
+  const finishedWithAnswer = !!text.trim() && !(lastStep?.toolCalls?.length > 0);
+  const finalContent = finishedWithAnswer ? text : "I wasn't able to finish within the step limit.";
+  if (!finishedWithAnswer) {
+    callbacks.onTokenReset();
+    callbacks.onToken(finalContent);
+  }
 
-  const sources = sourceRegistry.getAll();
-  callbacks.onSources(sources);
-  callbacks.onStage("generating");
-  await streamFinalAnswer(finalContent, callbacks.onToken);
-
-  timing.record("total", Date.now() - loopStartedAt);
-
-  return { finalContent, steps, sources, llmCallCount: result.steps.length };
+  // The turn's "total" timing row is recorded by the caller, which times
+  // the whole request — recording it here too would count agent turns twice.
+  return {
+    finalContent,
+    steps,
+    sources: sourceRegistry.getAll(),
+    rerankMethod,
+    llmCallCount: resultSteps.length,
+  };
 }

@@ -28,7 +28,12 @@ export async function runRetrievalPipeline(
   timing: TimingCollector
 ): Promise<PipelineResult> {
   onStage("optimizing", modeLabel(settings.queryOptimization));
-  let optimizedQuery = query;
+  // Two queries, because the two halves of hybrid search want different
+  // inputs: `searchQuery` is embedded (and sent to Cohere), so it should
+  // read like natural language; `keywordQuery` only feeds the full-text
+  // search, where stripped-down content words are exactly right.
+  let searchQuery = query;
+  let keywordQuery = query;
   if (settings.queryOptimization === "llm") {
     // Waited for outside the timed span, and recorded separately, so a
     // rate-limit queue delay doesn't masquerade as slow model latency in
@@ -40,25 +45,31 @@ export async function runRetrievalPipeline(
     const actuallyWaitedMs = Date.now() - waitStartedAt;
     if (actuallyWaitedMs > 50) timing.record("rate_limit_wait", actuallyWaitedMs);
 
-    optimizedQuery = await timing.time("optimize_query", () =>
+    searchQuery = await timing.time("optimize_query", () =>
       getOptimizedQuery(query, history, summary, settings.openrouterModel)
     );
+    keywordQuery = searchQuery;
   } else if (settings.queryOptimization === "local") {
-    optimizedQuery = await timing.time("optimize_query_local", () => localOptimizeQuery(query));
+    // The lemmatized keywords are deliberately *not* embedded: the
+    // embedding model was trained on full sentences, and "run machine"
+    // embeds noticeably worse than "how do I run the machine?".
+    keywordQuery = await timing.time("optimize_query_local", () => localOptimizeQuery(query));
   }
-  // "off" -> optimizedQuery stays the raw question.
+  // "off" -> both stay the raw question.
 
-  onStage("retrieving", optimizedQuery);
-  const retrieved = await timing.time("retrieve", () => retrieveChunks(optimizedQuery, { limit: 12 }));
+  onStage("retrieving", keywordQuery === searchQuery ? searchQuery : `${searchQuery} · keywords: ${keywordQuery}`);
+  const retrieved = await timing.time("retrieve", () =>
+    retrieveChunks(searchQuery, { limit: 12, keywordQuery })
+  );
 
   onStage("reranking", `${retrieved.length} candidate chunk(s)`);
   const { results: sources, method } = await timing.time("rerank", () =>
-    rankDocuments(optimizedQuery, retrieved, 5, settings.rerankMethod, settings.coherePerMinuteCap, (waitMs) =>
+    rankDocuments(searchQuery, retrieved, 5, settings.rerankMethod, settings.coherePerMinuteCap, (waitMs) =>
       onStage("rate_limited", `waiting ${Math.ceil(waitMs / 1000)}s for Cohere's rate limit`)
     )
   );
 
-  return { optimizedQuery, sources, rerankMethod: method };
+  return { optimizedQuery: searchQuery, sources, rerankMethod: method };
 }
 
 function modeLabel(mode: "off" | "local" | "llm"): string {

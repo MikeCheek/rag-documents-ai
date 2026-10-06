@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb, agentToolsTable } from "@/db";
 import type { AgentToolRecord, ToolParameter } from "@/types";
-import { assertSafeToolUrl } from "./ssrf-guard";
+import { guardedRequest } from "./ssrf-guard";
 
 const TOOL_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_CHARS = 8_000;
@@ -81,37 +81,32 @@ export async function executeCustomTool(
       urlStr = url.toString();
     }
 
-    const safeUrl = await assertSafeToolUrl(urlStr);
+    // Every hop (including redirects) is checked against private/internal
+    // addresses at connect time — see lib/agent/ssrf-guard.ts.
+    const res = await guardedRequest(urlStr, {
+      method: tool.method,
+      headers: {
+        ...(tool.headers ?? {}),
+        ...(tool.method === "POST" ? { "Content-Type": "application/json" } : {}),
+      },
+      body: tool.method === "POST" ? JSON.stringify(args) : undefined,
+      timeoutMs: TOOL_TIMEOUT_MS,
+      // Bytes, not chars, but close enough to bound what's read off the wire.
+      maxBytes: MAX_RESPONSE_CHARS * 4,
+    });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
-
+    const text = res.text.slice(0, MAX_RESPONSE_CHARS);
+    let parsed: unknown = text;
     try {
-      const res = await fetch(safeUrl.toString(), {
-        method: tool.method,
-        headers: {
-          ...(tool.headers ?? {}),
-          ...(tool.method === "POST" ? { "Content-Type": "application/json" } : {}),
-        },
-        body: tool.method === "POST" ? JSON.stringify(args) : undefined,
-        signal: controller.signal,
-      });
-
-      const text = (await res.text()).slice(0, MAX_RESPONSE_CHARS);
-      let parsed: unknown = text;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        // Not JSON — keep as plain text.
-      }
-
-      if (!res.ok) {
-        return { success: false, result: { status: res.status, body: parsed } };
-      }
-      return { success: true, result: parsed };
-    } finally {
-      clearTimeout(timeout);
+      parsed = JSON.parse(text);
+    } catch {
+      // Not JSON — keep as plain text.
     }
+
+    if (!res.ok) {
+      return { success: false, result: { status: res.status, body: parsed } };
+    }
+    return { success: true, result: parsed };
   } catch (err: any) {
     return { success: false, result: { error: err?.message ?? "Tool call failed" } };
   }

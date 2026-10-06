@@ -180,6 +180,10 @@ export function ChatView({
           } else if (event.type === "token") {
             content += event.content;
             update({ content });
+          } else if (event.type === "token_reset") {
+            // Agent mode: text streamed so far was preamble to a tool call.
+            content = "";
+            update({ content });
           } else if (event.type === "error") {
             update({ error: event.message, isStreaming: false });
           } else if (event.type === "done") {

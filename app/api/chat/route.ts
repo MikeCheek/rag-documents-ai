@@ -32,11 +32,18 @@ export async function POST(req: NextRequest) {
 
   (async () => {
     let chatId: string | undefined;
+    // Tracked outside the try so a failure partway through a turn can still
+    // be saved: without this, a failed turn left a question with no reply
+    // in the chat's history, and any answer streamed so far was lost.
+    let awaitingReply = false;
+    let partialAnswer = "";
+    let turnMode: ChatMode = "rag";
     try {
       const body = await req.json();
       const query: string = (body?.query ?? "").trim();
       chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
       const mode: ChatMode = body?.mode === "agent" ? "agent" : "rag";
+      turnMode = mode;
 
       if (!query) {
         send({ type: "error", message: "Empty question." });
@@ -76,13 +83,14 @@ export async function POST(req: NextRequest) {
         content: query,
         mode,
       });
+      awaitingReply = true;
 
       // ---------------------------------------------------------------
       // Agent mode: the model can call tools (possibly several times) in
       // a loop before producing a final answer. See lib/agent/loop.ts.
       // ---------------------------------------------------------------
       if (mode === "agent") {
-        const { finalContent, steps, sources, llmCallCount } = await runAgentLoop(
+        const { finalContent, steps, sources, rerankMethod, llmCallCount } = await runAgentLoop(
           query,
           history,
           summary,
@@ -91,9 +99,15 @@ export async function POST(req: NextRequest) {
           {
             onStage: (stage, detail) => send({ type: "stage", stage, detail }),
             onStep: (step) => send({ type: "agent_step", step }),
-            onToken: (content) => send({ type: "token", content }),
-            onSources: (sources) =>
-              send({ type: "sources", sources, rerankMethod: settings.rerankMethod }),
+            onToken: (content) => {
+              partialAnswer += content;
+              send({ type: "token", content });
+            },
+            onTokenReset: () => {
+              partialAnswer = "";
+              send({ type: "token_reset" });
+            },
+            onSources: (sources, rerankMethod) => send({ type: "sources", sources, rerankMethod }),
           },
           timing
         );
@@ -110,11 +124,12 @@ export async function POST(req: NextRequest) {
             mode: "agent",
             agentSteps: steps.length ? steps : null,
             sources: sources.length ? sources : null,
-            rerankMethod: sources.length ? settings.rerankMethod : null,
+            rerankMethod: sources.length ? rerankMethod : null,
             apiCallCount: llmCallCount,
             durationMs,
           })
           .returning();
+        awaitingReply = false;
         await db
           .update(chatsTable)
           .set({ updatedAt: new Date() })
@@ -196,6 +211,7 @@ export async function POST(req: NextRequest) {
             const delta = chunk.choices[0]?.delta?.content;
             if (delta) {
               answer += delta;
+              partialAnswer = answer;
               send({ type: "token", content: delta });
             }
             if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
@@ -221,6 +237,7 @@ export async function POST(req: NextRequest) {
           durationMs,
         })
         .returning();
+      awaitingReply = false;
       await db
         .update(chatsTable)
         .set({ updatedAt: new Date() })
@@ -236,7 +253,11 @@ export async function POST(req: NextRequest) {
       maybeCompactChat(activeChatId);
     } catch (err: any) {
       console.error("Chat route failed:", err);
-      send({ type: "error", message: err?.message ?? "Something went wrong." });
+      const message = err?.message ?? "Something went wrong.";
+      send({ type: "error", message });
+      if (awaitingReply && chatId) {
+        await saveFailedTurn(chatId, turnMode, partialAnswer, message);
+      }
     } finally {
       close();
     }
@@ -248,4 +269,22 @@ export async function POST(req: NextRequest) {
       "Cache-Control": "no-cache",
     },
   });
+}
+
+/** Saves whatever was produced before a turn failed, plus what went wrong,
+ *  so reopening the chat shows the failure instead of an unanswered question. */
+async function saveFailedTurn(chatId: string, mode: ChatMode, partial: string, error: string) {
+  try {
+    const note = `_This answer was interrupted: ${error}_`;
+    const db = getDb();
+    await db.insert(chatMessagesTable).values({
+      chatId,
+      role: "assistant",
+      content: partial.trim() ? `${partial}\n\n${note}` : note,
+      mode,
+    });
+    await db.update(chatsTable).set({ updatedAt: new Date() }).where(eq(chatsTable.id, chatId));
+  } catch (saveErr) {
+    console.error("Failed to save interrupted turn:", saveErr);
+  }
 }

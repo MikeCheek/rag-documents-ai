@@ -19,11 +19,15 @@ async function getEmbedder() {
 export const EMBEDDING_DIMENSIONS = 384;
 
 export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
   const embedder = await getEmbedder();
+  // One forward pass for the whole batch (padded to its longest text)
+  // rather than one per text — much faster on uploads.
+  const output = await embedder(texts, { pooling: "mean", normalize: true });
+  const flat = output.data as Float32Array;
   const results: number[][] = [];
-  for (const text of texts) {
-    const output = await embedder(text, { pooling: "mean", normalize: true });
-    results.push(Array.from(output.data) as number[]);
+  for (let i = 0; i < texts.length; i++) {
+    results.push(Array.from(flat.subarray(i * EMBEDDING_DIMENSIONS, (i + 1) * EMBEDDING_DIMENSIONS)));
   }
   logApiCall("local", "embedding", { count: texts.length });
   return results;
