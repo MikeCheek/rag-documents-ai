@@ -26,6 +26,21 @@ create table if not exists chunks (
   created_at timestamp not null default now()
 );
 
+-- Added as separate statements, not inside `create table`, so this file
+-- also brings an existing chunks table up to date when re-run (as
+-- `npm run db:migrate` does on databases set up before it existed) —
+-- `create table if not exists` would skip them there, and the index
+-- below would then fail on the missing column.
+alter table chunks add column if not exists page_start integer; -- source PDF page range; null for unpaged formats
+alter table chunks add column if not exists page_end integer;
+-- Keyword half of hybrid search (lib/rag/retrieve.ts), kept in sync with
+-- content automatically.
+alter table chunks add column if not exists content_tsv tsvector
+  generated always as (to_tsvector('english', content)) stored;
+
+create index if not exists chunks_content_tsv_index
+  on chunks using gin (content_tsv);
+
 create index if not exists chunks_embedding_index
   on chunks using hnsw (embedding vector_cosine_ops);
 

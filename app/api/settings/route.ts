@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/rag/settings";
+import { WHISPER_MODEL_IDS } from "@/lib/voice/whisper-models";
 import type { AppLimits, AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
 
 export const runtime = "nodejs";
@@ -89,6 +90,16 @@ export async function PATCH(req: NextRequest) {
         );
       }
       patch.searxngBaseUrl = url || null;
+    }
+
+    if (body?.whisperModel !== undefined) {
+      if (!WHISPER_MODEL_IDS.includes(body.whisperModel)) {
+        return NextResponse.json(
+          { error: `whisperModel must be one of: ${WHISPER_MODEL_IDS.join(", ")}` },
+          { status: 400 }
+        );
+      }
+      patch.whisperModel = body.whisperModel;
     }
 
     if (Object.keys(patch).length === 0) {

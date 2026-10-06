@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb, chatsTable, chatMessagesTable } from "@/db";
 
 export const runtime = "nodejs";
@@ -13,10 +13,16 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       return NextResponse.json({ error: "Chat not found" }, { status: 404 });
     }
 
+    // Only the currently-active version of each edited turn — every past
+    // version still exists in the database, reachable via
+    // /api/chats/[id]/messages/versions/[editGroupId] when actually
+    // browsing edit history, not as part of the normal chat view.
     const messages = await db
       .select()
       .from(chatMessagesTable)
-      .where(eq(chatMessagesTable.chatId, params.id))
+      .where(
+        and(eq(chatMessagesTable.chatId, params.id), eq(chatMessagesTable.isActiveVersion, true))
+      )
       .orderBy(asc(chatMessagesTable.id));
 
     return NextResponse.json({

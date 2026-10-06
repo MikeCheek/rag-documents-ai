@@ -36,6 +36,7 @@ export type ChatMessage = {
   apiCallCount?: number;
   durationMs?: number;
   createdAt?: string;
+  editGroupId?: string | null;
   stage?: string;
   stageDetail?: string;
   isStreaming?: boolean;
@@ -99,6 +100,7 @@ export type AppSettings = AppLimits & {
   rerankMethod: RerankMode;
   openrouterModel: string;
   searxngBaseUrl: string | null;
+  whisperModel: string;
 };
 
 export type ProviderConfigured = {
@@ -163,7 +165,14 @@ export type StoredChatMessage = {
   agentSteps: AgentStep[] | null;
   apiCallCount: number | null;
   durationMs: number | null;
+  editGroupId: string | null;
   createdAt: string;
+};
+
+export type MessageVersion = {
+  index: number; // 0-based position among this group's versions, oldest first
+  userMessage: StoredChatMessage;
+  assistantMessage: StoredChatMessage | null;
 };
 
 export type ToolParameter = {

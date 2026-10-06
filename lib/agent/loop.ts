@@ -113,7 +113,7 @@ export async function runAgentLoop(
   settings: AppSettings,
   callbacks: AgentLoopCallbacks,
   timing: TimingCollector,
-  options: { documentIds?: string[] } = {}
+  options: { documentIds?: string[]; abortSignal?: AbortSignal } = {}
 ): Promise<AgentLoopResult> {
   const model = getAgentModel(settings.openrouterModel);
   const customTools = await loadEnabledCustomTools();
@@ -262,8 +262,12 @@ export async function runAgentLoop(
 
   // Timed per LLM round-trip via onStepEnd, since streamText drives all
   // of them internally in one call — this is the only point we get a hook
-  // between rounds to measure each one individually.
+  // between rounds to measure each one individually. Also used as a
+  // fallback call count if the loop is aborted mid-round, since
+  // result.steps (the normal source of that count) only exists on a
+  // successful return.
   let lastRoundEndedAt = Date.now();
+  let completedRounds = 0;
 
   const result = streamText({
     model,
@@ -277,6 +281,7 @@ export async function runAgentLoop(
     // Generous round-based backstop only — the real, correctness-critical
     // limit is the per-tool-call cap enforced inside each execute() above.
     stopWhen: stepCountIs(maxSteps + 4),
+    abortSignal: options.abortSignal,
     // Awaited before every round's model call (including the first) — the
     // only hook available for gating individual round-trips now that the
     // SDK drives the multi-step loop internally rather than this file.
@@ -303,6 +308,7 @@ export async function runAgentLoop(
       const now = Date.now();
       timing.record("llm_call", now - lastRoundEndedAt);
       lastRoundEndedAt = now;
+      completedRounds++;
 
       // Text from a round that went on to call tools is the model thinking
       // out loud, not the answer — keep it in the Thinking panel.
@@ -319,19 +325,49 @@ export async function runAgentLoop(
   // text, and whether it was the final answer is only known once that
   // round ends: if it ends by calling tools, what was streamed was
   // preamble, so the client is told to discard it.
+  //
+  // Stopping (the client aborting the request) ends the stream early. The
+  // answer streamed so far in the current round is kept as the partial
+  // answer, and tool calls already completed stay in `steps`, the same as
+  // a stopped RAG answer keeps the tokens it already streamed.
   let streamedThisRound = false;
-  for await (const part of result.fullStream) {
-    if (part.type === "start-step") {
-      streamedThisRound = false;
-    } else if (part.type === "text-delta") {
-      if (!streamedThisRound) callbacks.onStage("generating");
-      streamedThisRound = true;
-      callbacks.onToken(part.text);
-    } else if (part.type === "finish-step") {
-      if (part.finishReason === "tool-calls" && streamedThisRound) callbacks.onTokenReset();
-    } else if (part.type === "error") {
-      throw part.error instanceof Error ? part.error : new Error(String(part.error));
+  let roundText = "";
+  try {
+    for await (const part of result.fullStream) {
+      if (part.type === "start-step") {
+        streamedThisRound = false;
+        roundText = "";
+      } else if (part.type === "text-delta") {
+        if (!streamedThisRound) callbacks.onStage("generating");
+        streamedThisRound = true;
+        roundText += part.text;
+        callbacks.onToken(part.text);
+      } else if (part.type === "finish-step") {
+        if (part.finishReason === "tool-calls" && streamedThisRound) {
+          callbacks.onTokenReset();
+          roundText = "";
+        }
+      } else if (part.type === "error") {
+        throw part.error instanceof Error ? part.error : new Error(String(part.error));
+      }
     }
+  } catch (err) {
+    // Only *our* abort is handled gracefully; a real failure still
+    // surfaces to the route's normal error handling.
+    if (!options.abortSignal?.aborted) throw err;
+  }
+
+  if (options.abortSignal?.aborted) {
+    // result.steps/result.text never settle normally after an abort, so
+    // the round counter from onStepEnd stands in for the call count.
+    for (let i = 0; i < completedRounds; i++) logApiCall("openrouter", "agent_step");
+    return {
+      finalContent: roundText,
+      steps,
+      sources: sourceRegistry.getAll(),
+      rerankMethod,
+      llmCallCount: completedRounds,
+    };
   }
 
   const resultSteps = await result.steps;

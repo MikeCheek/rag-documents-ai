@@ -27,7 +27,8 @@ export async function rankDocuments(
   limit: number,
   mode: RerankMode,
   coherePerMinuteCap?: number,
-  onWait?: WaitCallback
+  onWait?: WaitCallback,
+  abortSignal?: AbortSignal
 ): Promise<{ results: RankedChunk[]; method: RerankResultMethod }> {
   if (documents.length === 0) {
     return { results: [], method: "vector" };
@@ -50,12 +51,15 @@ export async function rankDocuments(
   try {
     await cohereLimiter.waitForSlot(coherePerMinuteCap, onWait);
 
-    const rerank = await cohere.v2.rerank({
-      query,
-      topN: Math.min(limit, documents.length),
-      documents: documents.map((doc) => doc.content),
-      model: "rerank-english-v3.0",
-    });
+    const rerank = await cohere.v2.rerank(
+      {
+        query,
+        topN: Math.min(limit, documents.length),
+        documents: documents.map((doc) => doc.content),
+        model: "rerank-english-v3.0",
+      },
+      { abortSignal }
+    );
 
     logApiCall("cohere", "rerank");
 
@@ -66,6 +70,8 @@ export async function rankDocuments(
 
     return { results, method: "cohere" };
   } catch (err) {
+    // A stop isn't a Cohere failure: don't fall back, just stop.
+    if (abortSignal?.aborted) throw err;
     console.error("Cohere rerank failed, falling back to local BM25:", err);
     logApiCall("cohere", "rerank");
     return { results: await bm25Rank(query, documents, limit), method: "bm25" };

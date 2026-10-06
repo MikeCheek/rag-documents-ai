@@ -131,6 +131,40 @@ describe("runAgentLoop", () => {
     expect(content()).toBe(result.finalContent);
   });
 
+  it("keeps the partial answer when stopped mid-stream", async () => {
+    const controller = new AbortController();
+    model.current = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              ...text("t1", "The answer ", "is ", "forty-two", " and more"),
+              { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
+            ] as any[],
+            chunkDelayInMs: 20,
+          }),
+        },
+      ],
+    });
+
+    const { cb, content } = callbacks();
+    const onToken = cb.onToken;
+    let tokens = 0;
+    cb.onToken = (t: string) => {
+      onToken(t);
+      // Stop right after the third token arrives, as the Stop button would.
+      if (++tokens === 3) controller.abort();
+    };
+
+    const result = await runAgentLoop("q", [], null, "chat", settings, cb, new TimingCollector(), {
+      abortSignal: controller.signal,
+    });
+    expect(result.finalContent).toBe("The answer is forty-two");
+    expect(content()).toBe("The answer is forty-two");
+    expect(result.llmCallCount).toBe(0);
+  });
+
   it("surfaces model errors instead of returning an empty answer", async () => {
     model.current = new MockLanguageModelV4({
       doStream: [{ stream: simulateReadableStream({ chunks: [{ type: "error", error: new Error("upstream 503") }] }) }],

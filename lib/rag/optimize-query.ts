@@ -15,7 +15,8 @@ export async function getOptimizedQuery(
   query: string,
   history: { role: "user" | "assistant"; content: string }[] = [],
   summary: string | null | undefined,
-  model: string
+  model: string,
+  abortSignal?: AbortSignal
 ): Promise<string> {
   const openrouter = getOpenRouter();
 
@@ -24,15 +25,18 @@ export async function getOptimizedQuery(
     ? `${SYSTEM_PROMPT}\n\nEarlier conversation summary, for context:\n${summary}`
     : SYSTEM_PROMPT;
 
-  const response = await openrouter.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
-      { role: "user", content: query },
-    ],
-    temperature: 0.2,
-  });
+  const response = await openrouter.chat.completions.create(
+    {
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: query },
+      ],
+      temperature: 0.2,
+    },
+    { signal: abortSignal }
+  );
 
   logApiCall("openrouter", "optimize_query", {
     tokensUsed: response.usage?.total_tokens,

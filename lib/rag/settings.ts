@@ -1,8 +1,10 @@
 import { eq } from "drizzle-orm";
 import { getDb, settingsTable } from "@/db";
 import type { AppLimits, AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
+import { DEFAULT_WHISPER_MODEL, WHISPER_MODEL_IDS } from "@/lib/voice/whisper-models";
 
 export type { AppLimits, AppSettings, QueryOptimizationMode, RerankMode };
+export { DEFAULT_WHISPER_MODEL, WHISPER_MODEL_OPTIONS } from "@/lib/voice/whisper-models";
 
 export const DEFAULT_LIMITS: AppLimits = {
   cohereMonthlyCap: 1000,
@@ -28,6 +30,7 @@ export async function getSettings(): Promise<AppSettings> {
       agentMaxSteps: row.agentMaxSteps,
       openrouterModel: row.openrouterModel,
       searxngBaseUrl: row.searxngBaseUrl,
+      whisperModel: row.whisperModel,
       queryOptimization: row.queryOptimization as QueryOptimizationMode,
       rerankMethod: row.rerankMethod as RerankMode,
     };
@@ -45,6 +48,7 @@ export async function getSettings(): Promise<AppSettings> {
     rerankMethod: process.env.COHERE_API_KEY ? "cohere" : "bm25",
     openrouterModel: process.env.OPENROUTER_MODEL || "openrouter/free",
     searxngBaseUrl: process.env.SEARXNG_BASE_URL?.trim() || null,
+    whisperModel: DEFAULT_WHISPER_MODEL,
   };
 
   await db.insert(settingsTable).values({ id: 1, ...seed }).onConflictDoNothing();
@@ -75,6 +79,10 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
     } else {
       patch.searxngBaseUrl = url.replace(/\/+$/, ""); // no trailing slash
     }
+  }
+
+  if (patch.whisperModel !== undefined && !WHISPER_MODEL_IDS.includes(patch.whisperModel as any)) {
+    throw new Error(`Invalid whisperModel: ${patch.whisperModel}`);
   }
 
   const db = getDb();

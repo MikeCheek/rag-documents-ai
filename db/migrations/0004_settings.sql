@@ -1,8 +1,11 @@
 -- Singleton row (id = 1) holding every user-adjustable setting: the
 -- model, free-tier usage limits shown on the dashboard, query
--- optimization / reranking mode, Agent mode's step cap, and web search's
--- SearXNG URL. Read/written by lib/rag/settings.ts, editable from the
--- Settings screen.
+-- optimization / reranking mode, Agent mode's step cap, web search's
+-- SearXNG URL, and which Whisper variant local speech-to-text loads.
+-- Read/written by lib/rag/settings.ts, editable from the Settings
+-- screen. (The TTS voice/rate the speaker button uses lives in the
+-- browser's own localStorage instead — see lib/voice/tts-preferences.ts
+-- — since available system voices are inherently per-device.)
 
 create table if not exists settings (
   id integer primary key,
@@ -15,6 +18,7 @@ create table if not exists settings (
   agent_max_steps integer not null default 6,
   openrouter_model text not null default 'openrouter/free',
   searxng_base_url text, -- null = web search not configured/offered
+  whisper_model text not null default 'Xenova/whisper-tiny.en',
   updated_at timestamp not null default now()
 );
 

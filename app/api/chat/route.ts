@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     let awaitingReply = false;
     let partialAnswer = "";
     let turnMode: ChatMode = "rag";
+    let turnEditGroupId: string | undefined;
     try {
       const body = await req.json();
       const query: string = (body?.query ?? "").trim();
@@ -51,6 +52,14 @@ export async function POST(req: NextRequest) {
       const documentIds: string[] | undefined = Array.isArray(body?.documentIds)
         ? body.documentIds.filter((id: unknown): id is string => typeof id === "string" && UUID.test(id))
         : undefined;
+      // Present only when this turn is replacing an edited message —
+      // tags both the new user message and its reply so they join the
+      // same version group as whatever was just deactivated by
+      // /api/chats/[id]/messages/start-edit, instead of starting a new,
+      // unrelated group.
+      const editGroupId: string | undefined =
+        typeof body?.editGroupId === "string" ? body.editGroupId : undefined;
+      turnEditGroupId = editGroupId;
 
       if (!query) {
         send({ type: "error", message: "Empty question." });
@@ -89,6 +98,7 @@ export async function POST(req: NextRequest) {
         role: "user",
         content: query,
         mode,
+        editGroupId,
       });
       awaitingReply = true;
 
@@ -117,24 +127,29 @@ export async function POST(req: NextRequest) {
             onSources: (sources, rerankMethod) => send({ type: "sources", sources, rerankMethod }),
           },
           timing,
-          { documentIds }
+          { documentIds, abortSignal: req.signal }
         );
 
         const durationMs = Date.now() - turnStartedAt;
         timing.record("total", durationMs);
+
+        const wasStopped = req.signal.aborted;
+        const persistedContent =
+          finalContent || (wasStopped ? "_(Stopped before an answer was generated.)_" : "");
 
         const [assistantMessage] = await db
           .insert(chatMessagesTable)
           .values({
             chatId: activeChatId,
             role: "assistant",
-            content: finalContent,
+            content: persistedContent,
             mode: "agent",
             agentSteps: steps.length ? steps : null,
             sources: sources.length ? sources : null,
             rerankMethod: sources.length ? rerankMethod : null,
             apiCallCount: llmCallCount,
             durationMs,
+            editGroupId,
           })
           .returning();
         awaitingReply = false;
@@ -161,7 +176,7 @@ export async function POST(req: NextRequest) {
         settings,
         (stage, detail) => send({ type: "stage", stage, detail }),
         timing,
-        { documentIds }
+        { documentIds, abortSignal: req.signal }
       );
 
       send({ type: "sources", sources, rerankMethod });
@@ -203,30 +218,42 @@ export async function POST(req: NextRequest) {
 
         await timing.time("generate", async () => {
           const openrouter = getOpenRouter();
-          const completion = await openrouter.chat.completions.create({
-            model: settings.openrouterModel,
-            stream: true,
-            stream_options: { include_usage: true },
-            temperature: 0.3,
-            messages: [
-              { role: "system", content: systemPrompt },
-              ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
-              {
-                role: "user",
-                content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
-              },
-            ],
-          });
-
           let totalTokens: number | undefined;
-          for await (const chunk of completion) {
-            const delta = chunk.choices[0]?.delta?.content;
-            if (delta) {
-              answer += delta;
-              partialAnswer = answer;
-              send({ type: "token", content: delta });
+
+          try {
+            const completion = await openrouter.chat.completions.create(
+              {
+                model: settings.openrouterModel,
+                stream: true,
+                stream_options: { include_usage: true },
+                temperature: 0.3,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+                  {
+                    role: "user",
+                    content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
+                  },
+                ],
+              },
+              { signal: req.signal }
+            );
+
+            for await (const chunk of completion) {
+              const delta = chunk.choices[0]?.delta?.content;
+              if (delta) {
+                answer += delta;
+                partialAnswer = answer;
+                send({ type: "token", content: delta });
+              }
+              if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
             }
-            if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
+          } catch (err: any) {
+            // A genuine failure (before or during the stream) should still
+            // surface normally — only a deliberate stop (our own signal
+            // firing) is handled here, keeping whatever text streamed in
+            // before it rather than throwing the partial answer away.
+            if (!req.signal.aborted) throw err;
           }
 
           logApiCall("openrouter", "chat_completion", { tokensUsed: totalTokens });
@@ -236,17 +263,21 @@ export async function POST(req: NextRequest) {
       const durationMs = Date.now() - turnStartedAt;
       timing.record("total", durationMs);
 
+      const persistedAnswer =
+        answer || (req.signal.aborted ? "_(Stopped before an answer was generated.)_" : "");
+
       const [assistantMessage] = await db
         .insert(chatMessagesTable)
         .values({
           chatId: activeChatId,
           role: "assistant",
-          content: answer,
+          content: persistedAnswer,
           mode: "rag",
           sources: sources.length ? sources : null,
           rerankMethod,
           apiCallCount: llmCallCount,
           durationMs,
+          editGroupId,
         })
         .returning();
       awaitingReply = false;
@@ -264,11 +295,17 @@ export async function POST(req: NextRequest) {
       // gets long. Runs after the response is already sent.
       maybeCompactChat(activeChatId);
     } catch (err: any) {
-      console.error("Chat route failed:", err);
+      const stopped = req.signal.aborted;
+      // A stop that lands before either branch's own graceful-abort
+      // handling (e.g. during retrieval) isn't a failure: no error log, and
+      // no error event, since nobody's listening anymore.
+      if (!stopped) console.error("Chat route failed:", err);
       const message = describeError(err);
-      send({ type: "error", message });
+      if (!stopped) send({ type: "error", message });
+      // Either way the question gets a reply in the history, rather than
+      // being left unanswered: what was produced so far, plus why it ended.
       if (awaitingReply && chatId) {
-        await saveFailedTurn(chatId, turnMode, partialAnswer, message);
+        await saveFailedTurn(chatId, turnMode, partialAnswer, stopped ? null : message, turnEditGroupId);
       }
     } finally {
       close();
@@ -283,18 +320,21 @@ export async function POST(req: NextRequest) {
   });
 }
 
-/** Saves whatever was produced before a turn failed, plus what went wrong,
- *  so reopening the chat shows the failure instead of an unanswered question. */
-async function saveFailedTurn(chatId: string, mode: ChatMode, partial: string, error: string) {
+/** Saves whatever was produced before a turn failed or was stopped, plus
+ *  why it ended, so reopening the chat shows that instead of an unanswered
+ *  question. `error` is null for a deliberate stop. */
+async function saveFailedTurn(
+  chatId: string,
+  mode: ChatMode,
+  partial: string,
+  error: string | null,
+  editGroupId: string | undefined
+) {
   try {
-    const note = `_This answer was interrupted: ${error}_`;
+    const note = error ? `_This answer was interrupted: ${error}_` : "_(Stopped before an answer was generated.)_";
+    const content = !partial.trim() ? note : error ? `${partial}\n\n${note}` : partial;
     const db = getDb();
-    await db.insert(chatMessagesTable).values({
-      chatId,
-      role: "assistant",
-      content: partial.trim() ? `${partial}\n\n${note}` : note,
-      mode,
-    });
+    await db.insert(chatMessagesTable).values({ chatId, role: "assistant", content, mode, editGroupId });
     await db.update(chatsTable).set({ updatedAt: new Date() }).where(eq(chatsTable.id, chatId));
   } catch (saveErr) {
     console.error("Failed to save interrupted turn:", saveErr);

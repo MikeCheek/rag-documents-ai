@@ -26,7 +26,7 @@ export async function runRetrievalPipeline(
   settings: AppSettings,
   onStage: (stage: PipelineStage, detail?: string) => void,
   timing: TimingCollector,
-  options: { documentIds?: string[] } = {}
+  options: { documentIds?: string[]; abortSignal?: AbortSignal } = {}
 ): Promise<PipelineResult> {
   onStage("optimizing", modeLabel(settings.queryOptimization));
   // Two queries, because the two halves of hybrid search want different
@@ -47,7 +47,7 @@ export async function runRetrievalPipeline(
     if (actuallyWaitedMs > 50) timing.record("rate_limit_wait", actuallyWaitedMs);
 
     searchQuery = await timing.time("optimize_query", () =>
-      getOptimizedQuery(query, history, summary, settings.openrouterModel)
+      getOptimizedQuery(query, history, summary, settings.openrouterModel, options.abortSignal)
     );
     keywordQuery = searchQuery;
   } else if (settings.queryOptimization === "local") {
@@ -66,7 +66,8 @@ export async function runRetrievalPipeline(
   onStage("reranking", `${retrieved.length} candidate chunk(s)`);
   const { results: sources, method } = await timing.time("rerank", () =>
     rankDocuments(searchQuery, retrieved, 5, settings.rerankMethod, settings.coherePerMinuteCap, (waitMs) =>
-      onStage("rate_limited", `waiting ${Math.ceil(waitMs / 1000)}s for Cohere's rate limit`)
+      onStage("rate_limited", `waiting ${Math.ceil(waitMs / 1000)}s for Cohere's rate limit`),
+      options.abortSignal
     )
   );
 

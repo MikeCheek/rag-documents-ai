@@ -1,3 +1,6 @@
+-- For existing databases only — the baseline (0001) already includes this
+-- column and index for anyone setting up fresh, so this is a no-op there.
+--
 -- Keyword half of hybrid search (see lib/rag/retrieve.ts). A generated
 -- column keeps the full-text index in sync with chunk content
 -- automatically, including for every chunk that already exists, so

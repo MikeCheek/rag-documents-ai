@@ -164,7 +164,7 @@ async function keywordSearch(
 
     return rows.map((r) => ({ ...r, similarity: Number(r.similarity) }));
   } catch (err: any) {
-    // The content_tsv column comes from migration 0006. Until it's been
+    // The content_tsv column comes from migration 0008 (or the 0001 baseline). Until it's been
     // run, degrade to vector-only search instead of failing every query.
     // Only disable for good if it's specifically content_tsv that's
     // missing; any other missing column (a different pending migration)

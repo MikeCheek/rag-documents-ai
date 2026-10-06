@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, SlidersHorizontal, Bot, Brain, AlertTriangle } from "lucide-react";
+import { Check, SlidersHorizontal, Bot, Brain, AlertTriangle, Database, Mic } from "lucide-react";
 import type { AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
 import { AgentToolsManager } from "@/components/settings/AgentToolsManager";
 import { WebSearchSettings } from "@/components/settings/WebSearchSettings";
 import { MemoryManager } from "@/components/settings/MemoryManager";
 import { ModelPicker } from "@/components/settings/ModelPicker";
 import { DangerZone } from "@/components/settings/DangerZone";
+import { DataManager } from "@/components/settings/DataManager";
+import { VoiceSettings } from "@/components/settings/VoiceSettings";
 import { cn } from "@/lib/utils";
 
 const QUERY_OPTIONS: { value: QueryOptimizationMode; label: string; description: string }[] = [
@@ -55,6 +57,8 @@ const TABS = [
   { key: "general", label: "General", icon: SlidersHorizontal },
   { key: "agent", label: "Agent", icon: Bot },
   { key: "memory", label: "Memory", icon: Brain },
+  { key: "voice", label: "Voice", icon: Mic },
+  { key: "data", label: "Data", icon: Database },
   { key: "danger", label: "Danger zone", icon: AlertTriangle },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
@@ -242,6 +246,28 @@ export default function SettingsPage() {
                   here.
                 </p>
                 <MemoryManager />
+              </section>
+            )}
+
+            {tab === "voice" && (
+              <section>
+                <h2 className="text-xs text-paper-400 mb-3">Voice</h2>
+                <VoiceSettings
+                  whisperModel={settings.whisperModel}
+                  onSaveWhisperModel={(model) => update({ whisperModel: model })}
+                  saving={savingKey === "whisperModel"}
+                />
+              </section>
+            )}
+
+            {tab === "data" && (
+              <section>
+                <h2 className="text-xs text-paper-400 mb-3">Data</h2>
+                <p className="text-xs text-paper-400 mb-3 leading-relaxed">
+                  Back up or move everything you've built here — documents,
+                  chats, memory, and custom tools.
+                </p>
+                <DataManager />
               </section>
             )}
 
