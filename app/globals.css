@@ -179,6 +179,7 @@
 }
 
 .mermaid-diagram svg {
-  max-width: 100%;
+  /* Natural size (see naturalSize() in MermaidDiagram.tsx); the figure scrolls. */
+  max-width: none !important;
   height: auto;
 }

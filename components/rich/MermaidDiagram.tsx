@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import { Maximize2, X } from "lucide-react";
+import { prepareMermaid, repairMermaid } from "@/lib/rich/mermaid-repair";
 
 // Renders a ```mermaid block (flowcharts, sequence diagrams, timelines,
 // ...). mermaid is large, so it's only loaded the first time an answer
@@ -45,16 +47,39 @@ export function MermaidDiagram({ source, streaming }: { source: string; streamin
   const id = "mmd-" + useId().replace(/[^a-zA-Z0-9]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  // Escape closes the full-screen view.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setExpanded(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [expanded]);
 
   useEffect(() => {
     // While streaming the source is incomplete; render once it's final.
     if (streaming) return;
     let cancelled = false;
     loadMermaid()
-      .then((mermaid) => mermaid.render(id, source.trim()))
+      .then(async (mermaid) => {
+        // Styling removed (it clashes with the dark theme); if the model's
+        // syntax doesn't parse, try once more with the usual mistakes
+        // repaired (unquoted labels with parentheses, reserved ids).
+        const prepared = prepareMermaid(source);
+        try {
+          await mermaid.parse(prepared);
+          return mermaid.render(id, prepared);
+        } catch (firstError) {
+          const repaired = repairMermaid(prepared);
+          if (repaired === prepared) throw firstError;
+          document.getElementById("d" + id)?.remove();
+          return mermaid.render(id, repaired);
+        }
+      })
       .then(({ svg }: { svg: string }) => {
         if (!cancelled) {
-          setSvg(svg);
+          setSvg(naturalSize(svg));
           setError(null);
         }
       })
@@ -80,10 +105,56 @@ export function MermaidDiagram({ source, streaming }: { source: string; streamin
     return <div className="my-3 h-32 rounded-lg border border-ink-600 bg-ink-850 animate-pulse" aria-label="Drawing diagram" />;
   }
   return (
-    <figure
-      className="mermaid-diagram my-3 rounded-lg border border-ink-600 bg-ink-850 p-3 overflow-x-auto flex justify-center"
-      // Sanitized by mermaid (securityLevel: "strict").
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <>
+      <figure className="mermaid-diagram relative my-3 rounded-lg border border-ink-600 bg-ink-850">
+        <button
+          onClick={() => setExpanded(true)}
+          className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded border border-ink-600 bg-ink-900/90 px-1.5 py-0.5 text-[11px] text-paper-400 hover:text-paper-200 transition-colors"
+          aria-label="Expand diagram"
+        >
+          <Maximize2 size={11} /> Expand
+        </button>
+        {/* Natural size, scrolling sideways when wider than the chat column:
+            shrinking a wide diagram to fit makes its text unreadable. */}
+        <div className="overflow-x-auto p-3">
+          <div
+            className="w-max mx-auto"
+            // Sanitized by mermaid (securityLevel: "strict").
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        </div>
+      </figure>
+      {expanded && (
+        <div
+          className="fixed inset-0 z-50 bg-ink-950/90 backdrop-blur-sm flex flex-col"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Diagram"
+          onClick={() => setExpanded(false)}
+        >
+          <div className="flex justify-end p-3">
+            <button
+              onClick={() => setExpanded(false)}
+              className="flex items-center gap-1 rounded border border-ink-600 bg-ink-900 px-2 py-1 text-xs text-paper-300 hover:text-paper-100"
+              aria-label="Close diagram"
+            >
+              <X size={13} /> Close
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto px-6 pb-6" onClick={(e) => e.stopPropagation()}>
+            <div className="mermaid-diagram w-max mx-auto rounded-lg border border-ink-600 bg-ink-850 p-6" dangerouslySetInnerHTML={{ __html: svg }} />
+          </div>
+        </div>
+      )}
+    </>
   );
+}
+
+/**
+ * Mermaid emits width="100%" plus a max-width style, which shrinks wide
+ * diagrams to the container. Give the SVG its natural pixel width instead.
+ */
+function naturalSize(svg: string): string {
+  const max = /max-width:\s*([\d.]+)px/.exec(svg)?.[1];
+  return max ? svg.replace(/width="100%"/, `width="${Math.ceil(Number(max))}"`) : svg;
 }

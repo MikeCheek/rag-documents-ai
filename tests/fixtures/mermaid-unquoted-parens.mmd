@@ -1,0 +1,39 @@
+flowchart TD
+    %% Title
+    title[Feed‑Forward 3D Scene Modeling: A Problem‑Driven Perspective]
+
+    %% ---- Part 1: Introduction & Overview ----
+    intro[Introduction<br/>– Core 3D representations<br/>(NeRF, 3DGS, Pointmap, etc.)] --> taxonomy
+
+    %% ---- Part 2: Problem‑Driven Taxonomy ----
+    taxonomy[T‑Driven Taxonomy<br/>(5 key research directions)] --> feat[1) Feature Enhancement<br/>§4.1 – robust 2D‑to‑3D lifting]
+    taxonomy --> geom[2) Geometry Awareness<br/>§4.2 – sparse‑input priors]
+    taxonomy --> eff[3) Model Efficiency<br/>§4.3 – computation & memory]
+    taxonomy --> augm[4) Augmentation Strategies<br/>§4.4 – generative / visual augmentation]
+    taxonomy --> temporal[5) Temporal‑aware Models<br/>§4.5 – 4D / dynamic scenes]
+
+    %% ---- Part 3: Datasets & Benchmarks ----
+    datasets[Datasets & Benchmarks<br/>– Geometry‑oriented (DTU, ScanNet, Replica)<br/>– Visual‑oriented (NeRF‑Synthetic, RealEstate10K, DL3DV)] --> apps
+
+    %% ---- Part 4: Applications ----
+    apps[Applications (§6)] --> auto[6.1 Autonomous Driving<br/>large‑scale dynamic reconstruction]
+    apps --> robot[6.2 Robotics<br/>manipulation, navigation, SfM/SLAM]
+    apps --> scene[6.3 Scene Understanding]
+    apps --> slam[6.4 SfM & SLAM<br/>direct geometry & pose prediction]
+    apps --> video[6.5 Video Generation<br/>novel‑view video synthesis]
+    apps --> other[6.6 Others<br/>visual localization, AR/VR, heritage, etc.]
+
+    %% ---- Part 5: Future Directions ----
+    future[Future Directions (§7)] --> bench[7.1 Benchmark Rigor]
+    future --> eff2[7.2 Model Efficiency]
+    future --> scal[7.3 Scalable Scene Representations]
+    future --> world[7.4 World Models / Unified Perception‑Reconstruction]
+    future --> open[7.5 Open Questions]
+
+    %% ---- Figures (referenced) ----
+    fig1[Figure 1 – Survey Outline] --> title
+    fig2[Figure 2 – Taxonomy of Methods] --> taxonomy
+
+    style title fill:#f9f9f9,stroke:#333,stroke-width:2px
+    style taxonomy fill:#e0f7fa,stroke:#006064,stroke-width:1px
+    style feat fill:#c8e6c9,stroke:#2e7d32,stroke-width:1px
