@@ -786,7 +786,10 @@ Fill in:
   [Agent mode](#-agent-mode) above for setup)
 - `APP_PASSWORD` (and optionally `APP_USERNAME`, default `admin`) —
   **set this anywhere other than your own machine.** It puts the whole app,
-  pages and API alike, behind HTTP Basic auth (see [Security](#security)).
+  pages and API alike, behind a sign-in page (see [Security](#security)).
+- `APP_SESSION_SECRET` — optional key for signing sessions. Without it the
+  key is derived from the username and password, so changing the password
+  signs everyone out; set it to keep sessions across a password change.
 - `MAX_UPLOAD_MB` — optional per-file upload limit, default 25.
 
 ### 4. Set up the database
@@ -898,11 +901,24 @@ request.
 
 ## Security
 
-- **Authentication** is opt-in via `APP_PASSWORD` (`middleware.ts`). Without
-  it, anyone who can reach the server can read your documents, spend your
-  OpenRouter quota, register custom tools, and use the Danger Zone. Fine on
-  `localhost`, not fine anywhere else. Basic auth sends the password with
-  every request, so serve the app over HTTPS when it's not on localhost.
+- **Sign-in** is opt-in via `APP_PASSWORD` (and `APP_USERNAME`, default
+  `admin`). Without it, anyone who can reach the server can read your
+  documents, spend your OpenRouter quota, register custom tools, and use the
+  Danger Zone: fine on `localhost`, not fine anywhere else. With it:
+  - Every page redirects to a `/login` page until you sign in, then back to
+    where you were going (only ever to a path on this site, so the page
+    can't be used to redirect people elsewhere). API requests get a 401.
+  - Signing in sets a signed session cookie (HMAC-SHA256; `HttpOnly`,
+    `SameSite=Lax`, `Secure` over HTTPS) lasting 12 hours, or 30 days with
+    "Keep me signed in". There's no session store: changing the password
+    (or `APP_SESSION_SECRET`) invalidates every session.
+  - Five failed attempts from one address within 15 minutes lock that
+    address out until the window passes; failures are also slowed down, and
+    the message never says whether the username or the password was wrong.
+  - "Sign out" is in the top bar. If a session expires while the app is
+    open, the next request sends you back to sign in, then returns you.
+  - Serve the app over HTTPS anywhere other than localhost, so the password
+    and session cookie aren't sent in the clear.
 - **Custom tools** make model-initiated HTTP requests, so they're guarded
   against reaching private/internal addresses (`lib/agent/ssrf-guard.ts`).
   The address check runs inside the socket's own DNS lookup, so a hostname
