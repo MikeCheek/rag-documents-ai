@@ -754,6 +754,47 @@ The Ledger tracks every call your own app makes (logged to the `api_calls`
 table) so the dashboard's numbers are exact for this app, though they
 won't reflect usage from an API key shared with another project.
 
+## Running with Docker
+
+The quickest way to run everything on your own computer: the app and a
+Postgres database (with pgvector) in two containers, served on
+**http://localhost:3880**. You don't need Node or Supabase installed, only
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) (or
+Docker Engine with the Compose plugin).
+
+```bash
+cp .env.example .env.local   # then fill in OPENROUTER_API_KEY etc.
+docker compose up -d --build # or: npm run docker:up
+```
+
+The first build takes a few minutes: it installs dependencies, builds the
+app, and downloads the default embedding model into the image. After
+that:
+
+- **Open http://localhost:3880.** On every start the app container applies
+  any pending database migrations, then starts the server and its
+  background worker.
+- **Your data is kept in Docker volumes** (`pgdata` for the database,
+  `models` for downloaded embedding models), so it survives restarts and
+  rebuilds. `docker compose down` stops everything and keeps the data;
+  `docker compose down -v` **deletes** it.
+- **Logs:** `docker compose logs -f app` (or `npm run docker:logs`).
+- **Update after pulling new code:** `docker compose up -d --build`.
+- **Settings come from `.env.local`**, except `DATABASE_URL`, which points
+  at the bundled database. To use another database instead (e.g. your
+  Supabase one), put `DOCKER_DATABASE_URL=...` in a `.env` file next to
+  `docker-compose.yml`.
+- **Services on your own computer** (e.g. a local SearXNG for web search)
+  are at `http://host.docker.internal:<port>` from inside the container,
+  not `localhost`.
+- **The port is only reachable from this computer.** To open it to your
+  local network, change `"127.0.0.1:3880:3880"` to `"3880:3880"` in
+  `docker-compose.yml`, and set `APP_PASSWORD`.
+
+To move existing documents and chats from Supabase into the Docker
+database, use **Export** in the app you're running now, then **Import** in
+the Docker one (see [Export & import](#export--import)).
+
 ## Setup
 
 ### 1. Install dependencies
