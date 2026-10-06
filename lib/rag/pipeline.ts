@@ -58,7 +58,13 @@ export async function runRetrievalPipeline(
   }
   // "off" -> both stay the raw question.
 
-  onStage("retrieving", keywordQuery === searchQuery ? searchQuery : `${searchQuery} · keywords: ${keywordQuery}`);
+  const scopeNote = options.documentIds?.length
+    ? ` · in ${options.documentIds.length} selected document${options.documentIds.length === 1 ? "" : "s"}`
+    : "";
+  onStage(
+    "retrieving",
+    (keywordQuery === searchQuery ? searchQuery : `${searchQuery} · keywords: ${keywordQuery}`) + scopeNote
+  );
   const retrieved = await timing.time("retrieve", () =>
     retrieveChunks(searchQuery, { limit: 12, keywordQuery, documentIds: options.documentIds })
   );

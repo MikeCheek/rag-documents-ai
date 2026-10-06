@@ -48,6 +48,9 @@ create index if not exists chat_messages_chat_id_index
 -- Result of checking an answer's citations against its sources
 -- (lib/rag/citation-check.ts); null for user messages and older answers.
 alter table chat_messages add column if not exists citation_check jsonb;
+-- On user messages: the documents a "Search in" choice limited the
+-- question to, as [{ id, name }]; null = all documents.
+alter table chat_messages add column if not exists document_scope jsonb;
 
 create index if not exists chat_messages_edit_group_id_index
   on chat_messages (edit_group_id);

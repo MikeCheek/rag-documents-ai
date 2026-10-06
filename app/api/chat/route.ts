@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
-import { eq } from "drizzle-orm";
-import { getDb, chatsTable, chatMessagesTable } from "@/db";
+import { eq, inArray } from "drizzle-orm";
+import { getDb, chatsTable, chatMessagesTable, documentsTable } from "@/db";
 import { getOpenRouter } from "@/lib/rag/clients";
 import { runRetrievalPipeline } from "@/lib/rag/pipeline";
 import { runAgentLoop } from "@/lib/agent/loop";
@@ -13,6 +13,7 @@ import { TimingCollector, persistTimings } from "@/lib/rag/timing";
 import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { ChatMode } from "@/types";
 import { formatPages } from "@/lib/utils";
+import { RICH_FORMATTING_GUIDE } from "@/lib/rich/prompt";
 import { describeError } from "@/lib/db-errors";
 import { expandWithNeighbors } from "@/lib/rag/context";
 import { checkCitations, type CitationCheck } from "@/lib/rag/citation-check";
@@ -30,7 +31,9 @@ Rules:
 3. If multiple sources support a claim, cite all of them, e.g. [1][3].
 4. If the context does not contain enough information to answer, say so plainly and explain what's missing. Do not guess or invent facts.
 5. Write in clear, well-organized prose (short paragraphs or a list when helpful). Do not repeat the question back.
-6. For math, chemistry, or nuclear notation, write LaTeX delimited with single dollar signs for inline (e.g. $E=mc^2$) and double dollar signs for standalone equations (e.g. $$...$$). Do not use \\( \\) or \\[ \\] delimiters.`;
+6. For math, chemistry, or nuclear notation, write LaTeX delimited with single dollar signs for inline (e.g. $E=mc^2$) and double dollar signs for standalone equations (e.g. $$...$$). Do not use \\( \\) or \\[ \\] delimiters.
+
+${RICH_FORMATTING_GUIDE}`;
 
 export async function POST(req: NextRequest) {
   const { stream, send, close } = createEventStream();
@@ -72,6 +75,15 @@ export async function POST(req: NextRequest) {
 
       const db = getDb();
 
+      // Saved on the question (with names, so it still reads correctly if a
+      // document is renamed or deleted later) and shown with it in the chat.
+      const documentScope = documentIds?.length
+        ? await db
+            .select({ id: documentsTable.id, name: documentsTable.name })
+            .from(documentsTable)
+            .where(inArray(documentsTable.id, documentIds))
+        : null;
+
       if (!chatId) {
         const [chat] = await db
           .insert(chatsTable)
@@ -102,6 +114,7 @@ export async function POST(req: NextRequest) {
         content: query,
         mode,
         editGroupId,
+        documentScope,
       });
       awaitingReply = true;
 

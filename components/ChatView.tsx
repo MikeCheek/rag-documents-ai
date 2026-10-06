@@ -39,6 +39,7 @@ function storedToChatMessage(m: StoredChatMessage): ChatMessage {
     durationMs: m.durationMs ?? undefined,
     editGroupId: m.editGroupId ?? undefined,
     citationCheck: m.citationCheck ?? undefined,
+    documentScope: m.documentScope ?? undefined,
   };
 }
 
@@ -115,6 +116,8 @@ export function ChatView({
 
     if (!chatId) {
       setMessages([]);
+      // A new chat searches everything until told otherwise.
+      setScope([]);
       return;
     }
 
@@ -126,6 +129,10 @@ export function ChatView({
       .then((json: { messages?: StoredChatMessage[] }) => {
         if (cancelled || !json.messages) return;
         setMessages(json.messages.map(storedToChatMessage));
+        // Reopening a chat restores the "Search in" choice its last
+        // question used, so follow-ups stay in the same documents.
+        const lastUser = [...json.messages].reverse().find((m) => m.role === "user");
+        setScope(lastUser?.documentScope?.map((d) => d.id) ?? []);
       })
       .catch(() => { })
       .finally(() => {
@@ -182,7 +189,10 @@ export function ChatView({
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    const userMsg: ChatMessage = { id: uid(), role: "user", content: question, mode, editGroupId };
+    const documentScope = activeScope.length
+      ? readyDocs.filter((d) => activeScope.includes(d.id)).map((d) => ({ id: d.id, name: d.name }))
+      : null;
+    const userMsg: ChatMessage = { id: uid(), role: "user", content: question, mode, editGroupId, documentScope };
     const assistantId = uid();
     const assistantMsg: ChatMessage = {
       id: assistantId,

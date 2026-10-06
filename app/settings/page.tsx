@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, SlidersHorizontal, Bot, Brain, AlertTriangle, Database, Mic } from "lucide-react";
+import { Check, SlidersHorizontal, Bot, Brain, AlertTriangle, Database, Mic, Plug } from "lucide-react";
 import type { AppSettings, QueryOptimizationMode, RerankMode } from "@/types";
 import { AgentToolsManager } from "@/components/settings/AgentToolsManager";
+import { ApiConnectionsManager } from "@/components/settings/ApiConnectionsManager";
+import { McpServersManager } from "@/components/settings/McpServersManager";
 import { WebSearchSettings } from "@/components/settings/WebSearchSettings";
 import { MemoryManager } from "@/components/settings/MemoryManager";
 import { ModelPicker } from "@/components/settings/ModelPicker";
@@ -56,6 +58,7 @@ const RERANK_OPTIONS: { value: RerankMode; label: string; description: string }[
 const TABS = [
   { key: "general", label: "General", icon: SlidersHorizontal },
   { key: "agent", label: "Agent", icon: Bot },
+  { key: "integrations", label: "Integrations", icon: Plug },
   { key: "memory", label: "Memory", icon: Brain },
   { key: "voice", label: "Voice", icon: Mic },
   { key: "data", label: "Data", icon: Database },
@@ -69,6 +72,9 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [cohereConfigured, setCohereConfigured] = useState<boolean | null>(null);
   const [tab, setTab] = useState<TabKey>("general");
+  // Bumped when API connections change, so the tools list (which shows
+  // connection names) reloads.
+  const [integrationsVersion, setIntegrationsVersion] = useState(0);
 
   function loadSettings() {
     fetch("/api/settings")
@@ -227,8 +233,39 @@ export default function SettingsPage() {
 
                 <section>
                   <h2 className="text-xs text-paper-400 mb-3">Tools</h2>
-                  <AgentToolsManager />
+                  <p className="text-xs text-paper-400 leading-relaxed">
+                    Custom tools, API connections and MCP servers are under{" "}
+                    <button onClick={() => setTab("integrations")} className="text-brass-300 hover:underline">
+                      Integrations
+                    </button>
+                    .
+                  </p>
                 </section>
+              </>
+            )}
+
+            {tab === "integrations" && (
+              <>
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">API connections</h2>
+                  <ApiConnectionsManager onChanged={() => setIntegrationsVersion((v) => v + 1)} />
+                </section>
+
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">Tools</h2>
+                  <AgentToolsManager refreshKey={integrationsVersion} />
+                </section>
+
+                <section>
+                  <h2 className="text-xs text-paper-400 mb-3">MCP servers</h2>
+                  <McpServersManager />
+                </section>
+
+                <p className="text-[11px] text-paper-400 leading-relaxed">
+                  Everything here is only used in Agent mode, and only when the model decides to call it. Tool results
+                  come from outside your documents, so treat them as untrusted: a malicious page or API response can try
+                  to steer the model.
+                </p>
               </>
             )}
 

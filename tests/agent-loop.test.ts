@@ -18,8 +18,24 @@ vi.mock("@/lib/agent/memory", () => ({
 }));
 vi.mock("@/lib/agent/custom-tools", () => ({
   loadEnabledCustomTools: async () => [],
+  loadConnections: async () => new Map(),
   customToolToFunctionSchema: vi.fn(),
   executeCustomTool: vi.fn(),
+}));
+
+const mcpState = {
+  tools: [] as any[],
+  failures: [] as { server: string; error: string }[],
+  closed: 0,
+};
+vi.mock("@/lib/agent/mcp", () => ({
+  openMcpTools: async () => ({
+    tools: mcpState.tools,
+    failures: mcpState.failures,
+    close: async () => {
+      mcpState.closed++;
+    },
+  }),
 }));
 
 const { runAgentLoop } = await import("@/lib/agent/loop");
@@ -80,6 +96,53 @@ function callbacks() {
 describe("runAgentLoop", () => {
   beforeEach(() => {
     model.current = null;
+    mcpState.tools = [];
+    mcpState.failures = [];
+    mcpState.closed = 0;
+  });
+
+  it("offers MCP tools to the model, runs them, and closes the connection", async () => {
+    const calls: any[] = [];
+    mcpState.tools = [
+      {
+        name: "weather__forecast",
+        description: "[weather] Forecast for a city",
+        inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        call: async (args: any) => {
+          calls.push(args);
+          return { success: true, result: "Sunny, 24°C" };
+        },
+      },
+    ];
+    mcpState.failures = [{ server: "broken", error: "connection refused" }];
+    model.current = new MockLanguageModelV4({
+      doStream: [
+        round([{ type: "tool-call", toolCallId: "c1", toolName: "weather__forecast", input: '{"city":"Rome"}' }], "tool-calls"),
+        round(text("t2", "It's sunny in Rome."), "stop"),
+      ],
+    });
+
+    const { cb } = callbacks();
+    const result = await runAgentLoop("weather in Rome?", [], null, "chat", settings, cb, new TimingCollector());
+
+    expect(calls).toEqual([{ city: "Rome" }]);
+    expect(result.finalContent).toBe("It's sunny in Rome.");
+    const toolResult = result.steps.find((s) => s.type === "tool_result") as any;
+    expect(toolResult).toMatchObject({ name: "weather__forecast", success: true });
+    expect(result.steps[0]).toMatchObject({ type: "message", content: expect.stringMatching(/broken.*connection refused/) });
+    // The model was actually offered the tool.
+    const offered = (model.current as any).doStreamCalls[0].tools.map((t: any) => t.name);
+    expect(offered).toContain("weather__forecast");
+    expect(mcpState.closed).toBe(1);
+  });
+
+  it("closes MCP connections even when the turn fails", async () => {
+    model.current = new MockLanguageModelV4({
+      doStream: [{ stream: simulateReadableStream({ chunks: [{ type: "error", error: new Error("boom") }] }) }],
+    });
+    const { cb } = callbacks();
+    await expect(runAgentLoop("x", [], null, "chat", settings, cb, new TimingCollector())).rejects.toThrow("boom");
+    expect(mcpState.closed).toBe(1);
   });
 
   it("streams the final answer, discarding preamble before a tool call", async () => {

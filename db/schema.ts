@@ -145,6 +145,7 @@ export const chatMessagesTable = pgTable(
     editGroupId: uuid("edit_group_id"),
     isActiveVersion: boolean("is_active_version").notNull().default(true),
     citationCheck: jsonb("citation_check"), // CitationCheck | null — see lib/rag/citation-check.ts
+    documentScope: jsonb("document_scope"), // [{ id, name }] | null — "Search in" on user messages
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -157,14 +158,47 @@ export const chatMessagesTable = pgTable(
 // rather than arbitrary code, so "create more tools" doesn't mean running
 // untrusted code server-side — the server just makes a bounded, guarded
 // HTTP request (see lib/agent/ssrf-guard.ts) and returns the response.
+// Reusable base URL + auth that custom tools can share (0003_agent.sql).
+export const apiConnectionsTable = pgTable("api_connections", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull().unique(),
+  baseUrl: text("base_url").notNull(),
+  authType: text("auth_type").notNull().default("none"), // none | bearer | header | query
+  authName: text("auth_name"), // header or query parameter name
+  authValue: text("auth_value"), // secret — never returned to the browser
+  headers: jsonb("headers"), // Record<string,string> | null
+  allowPrivateNetwork: boolean("allow_private_network").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Model Context Protocol servers whose tools Agent mode can call (lib/agent/mcp.ts).
+export const mcpServersTable = pgTable("mcp_servers", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull().unique(),
+  transport: text("transport").notNull().default("http"), // http | sse | stdio
+  url: text("url"),
+  headers: jsonb("headers"), // Record<string,string> | null — secret
+  command: text("command"),
+  args: jsonb("args"), // string[] | null
+  env: jsonb("env"), // Record<string,string> | null — secret
+  enabled: boolean("enabled").notNull().default(true),
+  disabledTools: jsonb("disabled_tools").notNull().default([]), // string[]
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const agentToolsTable = pgTable("agent_tools", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull().unique(), // shown to the LLM as the function name; identifier-safe
   description: text("description").notNull(),
-  method: text("method").notNull().default("GET"), // "GET" | "POST"
+  method: text("method").notNull().default("GET"), // GET | POST | PUT | PATCH | DELETE
   urlTemplate: text("url_template").notNull(), // e.g. https://api.example.com/search?q={query}
   parameters: jsonb("parameters").notNull(), // ToolParameter[]
   headers: jsonb("headers"), // Record<string,string> | null — static headers, e.g. an API key
+  // When set, urlTemplate is a path relative to the connection's base URL
+  // and the connection's auth applies.
+  connectionId: uuid("connection_id").references(() => apiConnectionsTable.id, { onDelete: "cascade" }),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

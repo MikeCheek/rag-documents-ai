@@ -43,6 +43,7 @@ export type ChatMessage = {
   createdAt?: string;
   editGroupId?: string | null;
   citationCheck?: CitationCheck | null;
+  documentScope?: DocumentScopeEntry[] | null;
   stage?: string;
   stageDetail?: string;
   isStreaming?: boolean;
@@ -179,6 +180,7 @@ export type StoredChatMessage = {
   durationMs: number | null;
   editGroupId: string | null;
   citationCheck?: CitationCheck | null;
+  documentScope?: DocumentScopeEntry[] | null;
   createdAt: string;
 };
 
@@ -188,25 +190,70 @@ export type MessageVersion = {
   assistantMessage: StoredChatMessage | null;
 };
 
+export type ToolParameterType = "string" | "number" | "integer" | "boolean" | "array" | "object";
+
 export type ToolParameter = {
   name: string;
-  type: "string" | "number" | "boolean";
+  type: ToolParameterType;
   description: string;
   required: boolean;
+  /** Allowed values, e.g. from an OpenAPI enum. */
+  enum?: string[];
 };
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type AgentToolRecord = {
   id: string;
   name: string;
   description: string;
-  method: "GET" | "POST";
+  method: HttpMethod;
+  /** Absolute URL, or a path relative to the connection's base URL. */
   urlTemplate: string;
   parameters: ToolParameter[];
   headers: Record<string, string> | null;
+  connectionId: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
 };
+
+export type ApiAuthType = "none" | "bearer" | "header" | "query";
+
+/** An API connection as the browser sees it: the secret is never included. */
+export type ApiConnectionRecord = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  authType: ApiAuthType;
+  authName: string | null;
+  hasSecret: boolean;
+  headerNames: string[];
+  allowPrivateNetwork: boolean;
+  toolCount: number;
+  createdAt: string;
+};
+
+export type McpTransportType = "http" | "sse" | "stdio";
+
+/** An MCP server as the browser sees it: header and env values are never included. */
+export type McpServerRecord = {
+  id: string;
+  name: string;
+  transport: McpTransportType;
+  url: string | null;
+  headerNames: string[];
+  command: string | null;
+  args: string[];
+  envNames: string[];
+  enabled: boolean;
+  disabledTools: string[];
+  createdAt: string;
+};
+
+export type McpToolInfo = { name: string; description: string; enabled: boolean };
+
+export type DocumentScopeEntry = { id: string; name: string };
 
 export type AgentMemory = {
   id: string;

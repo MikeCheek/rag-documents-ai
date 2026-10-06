@@ -97,3 +97,88 @@
 .prose-answer tbody tr:last-child td {
   border-bottom: none;
 }
+
+/* ---- Rich answer formatting ------------------------------------------- */
+
+.prose-answer h1, .prose-answer h2, .prose-answer h3, .prose-answer h4 {
+  color: #F4F2ED;
+  font-family: var(--font-newsreader, serif);
+  line-height: 1.3;
+  margin: 1.1em 0 0.45em;
+}
+.prose-answer h1 { font-size: 1.35em; }
+.prose-answer h2 { font-size: 1.2em; }
+.prose-answer h3 { font-size: 1.05em; }
+.prose-answer h4 { font-size: 1em; color: #CFCBC1; }
+.prose-answer > :first-child { margin-top: 0; }
+.prose-answer hr {
+  border: none;
+  border-top: 1px solid #2A3140;
+  margin: 1.2em 0;
+}
+.prose-answer blockquote {
+  border-left: 2px solid #3A4356;
+  padding-left: 0.9em;
+  color: #CFCBC1;
+  margin: 0 0 0.85em 0;
+}
+.prose-answer tbody tr:nth-child(even) td {
+  background: rgba(244, 242, 237, 0.025);
+}
+.prose-answer td { font-variant-numeric: tabular-nums; }
+
+/* Fenced code: the block supplies the background; inline code keeps its own. */
+.prose-answer .code-block pre code,
+.prose-answer .code-block pre code.hljs {
+  background: transparent;
+  padding: 0;
+  font-size: 1em;
+}
+
+/* GitHub-style callouts: > [!NOTE], [!TIP], [!IMPORTANT], [!WARNING], [!CAUTION].
+   Each kind keeps its color on the border and title only; body text stays in
+   the normal text color, and the title spells out the kind (never color alone). */
+.prose-answer .callout {
+  border: 1px solid #2A3140;
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: #141926;
+  padding: 0.6em 0.9em;
+  margin: 0 0 0.9em 0;
+}
+.prose-answer .callout > :last-child { margin-bottom: 0; }
+.prose-answer .callout-title {
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.35em !important;
+}
+.prose-answer .callout-note { border-left-color: #3987e5; }
+.prose-answer .callout-note .callout-title { color: #6da7ec; }
+.prose-answer .callout-tip { border-left-color: #199e70; }
+.prose-answer .callout-tip .callout-title { color: #3fbf8f; }
+.prose-answer .callout-important { border-left-color: #9085e9; }
+.prose-answer .callout-important .callout-title { color: #ada5ef; }
+.prose-answer .callout-warning { border-left-color: #c98500; }
+.prose-answer .callout-warning .callout-title { color: #e0a73a; }
+.prose-answer .callout-caution { border-left-color: #e66767; }
+.prose-answer .callout-caution .callout-title { color: #ee8f8f; }
+
+/* Charts (components/rich/ChartBlock.tsx): the validated categorical slots,
+   dark-surface steps (checked against #10141C with the dataviz validator). */
+.viz-root {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}

@@ -16,6 +16,7 @@
     "worker": "tsx scripts/worker.ts"
   },
   "dependencies": {
+    "@ai-sdk/mcp": "^2.0.67",
     "@napi-rs/canvas": "^1.0.10",
     "@openrouter/ai-sdk-provider": "^3.0.0",
     "@react-three/drei": "^9.114.3",
@@ -27,15 +28,18 @@
     "cohere-ai": "^7.14.0",
     "drizzle-orm": "^0.36.4",
     "expr-eval": "^2.0.2",
+    "highlight.js": "^11.12.0",
     "katex": "^0.18.7",
     "lucide-react": "^0.454.0",
     "mammoth": "^1.8.0",
+    "mermaid": "^12.1.0",
     "next": "14.2.35",
     "openai": "^4.73.0",
     "postgres": "^3.4.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
+    "rehype-highlight": "^7.0.2",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
@@ -45,9 +49,11 @@
     "unpdf": "^1.8.1",
     "uuid": "^9.0.1",
     "wink-eng-lite-web-model": "^1.8.1",
-    "wink-nlp": "^2.4.0"
+    "wink-nlp": "^2.4.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
@@ -60,6 +66,7 @@
     "tailwindcss": "^3.4.13",
     "tsx": "^4.23.15",
     "typescript": "^5.6.3",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "zod": "^3.25.76"
   }
 }

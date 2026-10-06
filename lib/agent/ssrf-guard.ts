@@ -84,8 +84,13 @@ function hostOf(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, "");
 }
 
-/** Static checks on a URL: scheme, blocked hostnames, and IP literals. */
-export function assertSafeToolUrl(rawUrl: string): URL {
+/**
+ * Static checks on a URL: scheme, blocked hostnames, and IP literals.
+ * `trustedHost` (a hostname the user configured themselves, e.g. an API
+ * connection's base URL with "allow private network" on) skips the
+ * private-address checks for exactly that host, nothing else.
+ */
+export function assertSafeToolUrl(rawUrl: string, trustedHost?: string): URL {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -98,6 +103,7 @@ export function assertSafeToolUrl(rawUrl: string): URL {
   }
 
   const host = hostOf(url).toLowerCase();
+  if (trustedHost && host === trustedHost.toLowerCase()) return url;
   if (BLOCKED_HOSTNAMES.has(host) || host.endsWith(".localhost")) {
     throw new Error(`Refusing to call blocked host: ${url.hostname}`);
   }
@@ -137,7 +143,14 @@ export type GuardedResponse = { status: number; ok: boolean; text: string };
 
 function requestOnce(
   url: URL,
-  init: { method: string; headers: Record<string, string>; body?: string; signal: AbortSignal; maxBytes: number }
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    signal: AbortSignal;
+    maxBytes: number;
+    trusted: boolean;
+  }
 ): Promise<{ status: number; location?: string; text: string }> {
   return new Promise((resolve, reject) => {
     const mod = url.protocol === "https:" ? https : http;
@@ -146,7 +159,8 @@ function requestOnce(
       {
         method: init.method,
         headers: init.headers,
-        lookup: guardedLookup,
+        // A trusted host (configured by the user) may resolve privately.
+        ...(init.trusted ? {} : { lookup: guardedLookup }),
         signal: init.signal,
         // A fresh agent per request: a pooled keep-alive socket could
         // otherwise be reused without going through the lookup again.
@@ -192,13 +206,16 @@ export async function guardedRequest(
     body?: string;
     timeoutMs?: number;
     maxBytes?: number;
+    /** Hostname allowed to be private (see assertSafeToolUrl). */
+    trustedHost?: string;
   } = {}
 ): Promise<GuardedResponse> {
   const signal = AbortSignal.timeout(options.timeoutMs ?? 10_000);
   let method = options.method ?? "GET";
   let body = options.body;
   let headers = options.headers ?? {};
-  let url = assertSafeToolUrl(rawUrl);
+  const trustedHost = options.trustedHost?.toLowerCase();
+  let url = assertSafeToolUrl(rawUrl, trustedHost);
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const res = await requestOnce(url, {
@@ -207,13 +224,14 @@ export async function guardedRequest(
       body,
       signal,
       maxBytes: options.maxBytes ?? 1_000_000,
+      trusted: !!trustedHost && hostOf(url).toLowerCase() === trustedHost,
     });
 
     if (!res.location) {
       return { status: res.status, ok: res.status >= 200 && res.status < 300, text: res.text };
     }
 
-    const next = assertSafeToolUrl(new URL(res.location, url).toString());
+    const next = assertSafeToolUrl(new URL(res.location, url).toString(), trustedHost);
     // A custom tool's static headers often carry an API key; like fetch,
     // don't forward them to a different origin.
     if (next.origin !== url.origin) headers = {};

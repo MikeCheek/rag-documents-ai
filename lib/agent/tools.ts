@@ -259,10 +259,11 @@ async function execSearchDocuments(
   };
 }
 
-async function execListDocuments() {
+async function execListDocuments(context: ToolContext) {
   const db = getDb();
   const rows = await db
     .select({
+      id: documentsTable.id,
       name: documentsTable.name,
       status: documentsTable.status,
       chunkCount: documentsTable.chunkCount,
@@ -270,7 +271,16 @@ async function execListDocuments() {
     .from(documentsTable)
     .orderBy(desc(documentsTable.createdAt));
 
-  return { documents: rows };
+  // With a "Search in" choice, only those documents exist as far as this
+  // turn is concerned; otherwise the model might talk about (or try to
+  // search) documents the user deliberately left out.
+  const scoped = context.documentIds?.length ? rows.filter((r) => context.documentIds!.includes(r.id)) : rows;
+  return {
+    documents: scoped.map(({ id: _id, ...doc }) => doc),
+    ...(context.documentIds?.length
+      ? { note: `The user limited this question to these ${scoped.length} document(s); search_documents only searches them.` }
+      : {}),
+  };
 }
 
 function execCalculator(args: { expression?: string }) {
@@ -392,7 +402,7 @@ export async function executeBuiltinTool(
         return { success: true, result, sources, rerankMethod };
       }
       case "list_documents":
-        return { success: true, result: await execListDocuments() };
+        return { success: true, result: await execListDocuments(context) };
       case "calculator":
         return { success: true, result: execCalculator(args) };
       case "current_datetime":

@@ -11,7 +11,14 @@ import {
   getBuiltinToolInfo,
   executeBuiltinTool,
 } from "./tools";
-import { loadEnabledCustomTools, customToolToFunctionSchema, executeCustomTool } from "./custom-tools";
+import {
+  loadConnections,
+  loadEnabledCustomTools,
+  customToolToFunctionSchema,
+  executeCustomTool,
+} from "./custom-tools";
+import { openMcpTools, type McpAgentTool } from "./mcp";
+import { RICH_FORMATTING_GUIDE } from "@/lib/rich/prompt";
 import { listMemories, formatMemoriesForPrompt } from "./memory";
 
 export { getBuiltinToolInfo };
@@ -32,7 +39,9 @@ You also have persistent memory that carries across every future chat, not just 
 
 Be economical with tool calls: prefer one well-chosen query per distinct concept over several overlapping variations of the same query, and stop searching once you have enough information rather than re-querying for marginal gains. Never issue two searches that differ only slightly in wording — if a search didn't return what you needed, either try one genuinely different angle or move on.
 
-Once you have enough information, give a clear, well-organized final answer without calling any more tools. Cite passages you used with [1], [2], etc. matching the index shown next to each result — that numbering is consistent across every search you've made this turn, so the same source always has the same number. For math, chemistry, or nuclear notation, write LaTeX delimited with single dollar signs for inline (e.g. $E=mc^2$) and double dollar signs for standalone equations (e.g. $$...$$). Do not use \\( \\) or \\[ \\] delimiters.`;
+Once you have enough information, give a clear, well-organized final answer without calling any more tools. Cite passages you used with [1], [2], etc. matching the index shown next to each result — that numbering is consistent across every search you've made this turn, so the same source always has the same number. For math, chemistry, or nuclear notation, write LaTeX delimited with single dollar signs for inline (e.g. $E=mc^2$) and double dollar signs for standalone equations (e.g. $$...$$). Do not use \\( \\) or \\[ \\] delimiters.
+
+${RICH_FORMATTING_GUIDE}`;
 
 export type AgentLoopCallbacks = {
   onStage: (stage: string, detail?: string) => void;
@@ -105,6 +114,8 @@ async function logToolCall(chatId: string, toolName: string, success: boolean, d
   }
 }
 
+type AgentLoopOptions = { documentIds?: string[]; abortSignal?: AbortSignal };
+
 export async function runAgentLoop(
   query: string,
   history: { role: "user" | "assistant"; content: string }[],
@@ -113,10 +124,31 @@ export async function runAgentLoop(
   settings: AppSettings,
   callbacks: AgentLoopCallbacks,
   timing: TimingCollector,
-  options: { documentIds?: string[]; abortSignal?: AbortSignal } = {}
+  options: AgentLoopOptions = {}
+): Promise<AgentLoopResult> {
+  // MCP servers are connected for this turn only, and always closed after,
+  // however the turn ends.
+  const mcp = await openMcpTools(options.abortSignal);
+  try {
+    return await runAgentTurn(query, history, summary, chatId, settings, callbacks, timing, options, mcp);
+  } finally {
+    await mcp.close();
+  }
+}
+
+async function runAgentTurn(
+  query: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  summary: string | null,
+  chatId: string,
+  settings: AppSettings,
+  callbacks: AgentLoopCallbacks,
+  timing: TimingCollector,
+  options: AgentLoopOptions,
+  mcp: { tools: McpAgentTool[]; failures: { server: string; error: string }[] }
 ): Promise<AgentLoopResult> {
   const model = getAgentModel(settings.openrouterModel);
-  const customTools = await loadEnabledCustomTools();
+  const [customTools, connections] = await Promise.all([loadEnabledCustomTools(), loadConnections()]);
   const builtinDefs = getAvailableBuiltinTools(settings);
 
   const memories = await listMemories();
@@ -129,6 +161,15 @@ export async function runAgentLoop(
     : `${AGENT_SYSTEM_PROMPT}${scopeSection}\n\n${memorySection}`;
 
   const steps: AgentStep[] = [];
+  // Shown in the Thinking panel and saved with the message.
+  for (const failure of mcp.failures) {
+    const step: AgentStep = {
+      type: "message",
+      content: `Couldn't connect to MCP server "${failure.server}", so its tools aren't available this turn: ${failure.error}`,
+    };
+    steps.push(step);
+    callbacks.onStep(step);
+  }
   const sourceRegistry = new SourceRegistry();
   let rerankMethod: RerankResultMethod | null = null;
   const maxSteps = settings.agentMaxSteps;
@@ -254,7 +295,22 @@ export async function runAgentLoop(
     toolMap[customToolRecord.name] = tool({
       description: schema.function.description,
       inputSchema: jsonSchema(schema.function.parameters as any),
-      execute: makeExecutor(customToolRecord.name, (args) => executeCustomTool(customToolRecord, args)),
+      execute: makeExecutor(customToolRecord.name, (args) =>
+        executeCustomTool(
+          customToolRecord,
+          args,
+          customToolRecord.connectionId ? connections.get(customToolRecord.connectionId) : null
+        )
+      ),
+    });
+  }
+
+  for (const mcpTool of mcp.tools) {
+    if (toolMap[mcpTool.name]) continue; // a built-in or custom tool already has this name
+    toolMap[mcpTool.name] = tool({
+      description: mcpTool.description,
+      inputSchema: jsonSchema(mcpTool.inputSchema as any),
+      execute: makeExecutor(mcpTool.name, (args) => mcpTool.call(args)),
     });
   }
 

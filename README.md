@@ -66,8 +66,22 @@ and is reserved entirely for switching between conversations.
   it work for a message you just sent in this session (its real database
   id isn't known client-side until the chat is reloaded).
 - **Limit a question to specific documents** with the "Search in" picker
-  above the input (shown once you have two or more documents). It applies
-  to both RAG and Agent mode until you change it.
+  above the input (shown once you have two or more ready documents). Only
+  those documents are searched, in RAG and Agent mode alike (Agent mode's
+  `list_documents` also only lists them). The question shows a "Searched in
+  …" chip, the live status says "in N selected documents", and reopening a
+  chat restores the choice its last question used; a new chat starts from
+  all documents.
+- **Rich answers**: besides Markdown (headings, lists, tables), answers can
+  contain **charts** (a ` ```chart ` block with a small JSON spec: bar,
+  horizontal bar, line, or headline-number tiles, with hover tooltips, a
+  legend and a "Show data" table), **diagrams** (` ```mermaid ` flowcharts,
+  sequence diagrams, timelines; rendered with Mermaid's strict security
+  level), **callouts** (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`,
+  `[!CAUTION]`), and **highlighted code** with a copy button. The model is
+  told about these and asked to use them only when they help, and to chart
+  only numbers from the sources (`lib/rich/prompt.ts`). A malformed chart
+  shows its error and source instead of breaking the answer.
 - **Every answer shows how long it took and how many LLM calls that took.**
   A small badge row under each assistant message reads e.g. "Agent",
   "3 LLM calls", "2.4s" as separate elements — deliberately just the
@@ -320,9 +334,10 @@ one produced it.
     a standing instruction should, independent of which conversation it was
     given in. Manage it directly (view, add, delete) from Settings →
     "Memory", not just through the agent.
-  - **Custom tools**, added from Settings → Agent mode: name, description,
-    HTTP method, a URL template with `{param}` placeholders, and a
-    parameter list. Deliberately HTTP-calling rather than arbitrary code —
+  - **Custom tools, API connections and MCP servers**, all under Settings →
+    Integrations (see [Integrations](#integrations)). A custom tool is a
+    name, description, HTTP method (GET/POST/PUT/PATCH/DELETE), a URL
+    template with `{param}` placeholders, and a parameter list. Deliberately HTTP-calling rather than arbitrary code —
     "add a tool" means "call an API", not "run generated code on the
     server". Requests are guarded against hitting private/internal network
     addresses (loopback, `10.x`, `172.16-31.x`, `192.168.x`, link-local/
@@ -593,6 +608,47 @@ Chat:    question -> optimize query -> hybrid search: vector (pgvector) + keywor
 - **Query optimization and reranking are both configurable** from the
   Settings screen (see [API usage](#api-usage)).
 
+## Integrations
+
+Settings → Integrations connects Agent mode to the outside world in three
+ways. Everything here is only used when the model decides to call it.
+
+- **API connections**: a base URL plus auth (Bearer token, API key in a
+  header, or API key in the query string) and extra headers, set once and
+  shared by any number of tools. Secrets are stored server-side and never
+  sent back to the browser (it only learns whether one is set); editing a
+  connection with the secret left blank keeps it. Auth is only applied to
+  requests to the connection's own origin, and a response that echoes the
+  secret back has it redacted before the model sees it.
+- **OpenAPI import**: give a spec URL or paste an OpenAPI 3.x / Swagger 2.0
+  document (JSON or YAML), pick the operations you want, and it creates a
+  connection plus one tool per operation (path and query parameters become
+  URL placeholders, JSON request-body fields become tool parameters, `$ref`s
+  are resolved, and the spec's auth scheme pre-fills the connection).
+  Operations it can't call (non-JSON bodies) are shown but not selectable.
+- **Custom tools** run `{param}`-filled requests: other arguments go in the
+  query string (GET, DELETE) or a JSON body (POST, PUT, PATCH). Every tool
+  has a **Test** button that runs it with arguments you write, exactly as
+  the agent would.
+- **Private networks**: tool requests can't reach localhost or LAN
+  addresses (the SSRF guard), unless the connection has "Allow a
+  private-network address" on, which allows exactly that connection's
+  host. Parameter values are URL-encoded, so the model can't change the
+  host, and redirects elsewhere are still guarded.
+- **MCP servers**: connect [Model Context Protocol](https://modelcontextprotocol.io)
+  servers over Streamable HTTP or the older HTTP+SSE transport, with
+  optional headers (e.g. `Authorization`, write-only like connection
+  secrets). Their tools are offered to the model as `<server>__<tool>`;
+  open a server's tool list to check the connection and switch individual
+  tools off. Each enabled server is connected at the start of every Agent
+  answer and closed after; one that can't be reached is skipped with a note
+  in the Thinking panel rather than failing the answer. Local servers run
+  as a command (stdio) are disabled unless `ALLOW_MCP_STDIO=1`, since that
+  runs a program on your server.
+- Tool results come from outside your documents: treat them as untrusted
+  input that can try to steer the model, and only connect services you
+  trust. Every call counts toward Agent mode's max tool calls per turn.
+
 ## Background processing
 
 Uploading only reads the file; everything slow happens in a background
@@ -755,6 +811,7 @@ tracking.
 0008_hybrid_search.sql        -- upgrade: full-text column + GIN index for hybrid search
 0009_chunk_pages.sql          -- upgrade: PDF page range per chunk, for page citations
 0010_jobs_and_multilingual.sql -- upgrade: background jobs, per-document language and embedding model, citation checks
+0011_connections_mcp_and_scope.sql -- upgrade: API connections, MCP servers, saved "Search in" scope
 ```
 
 The six baseline files (0000-0005) are organized by what each table *is*
@@ -815,7 +872,7 @@ usage and passage usage like normal questions.
 ### 7. Tests
 
 ```bash
-npm test           # unit tests: chunking, fusion, BM25, language, citations, OCR, network guard, auth, agent loop
+npm test           # chunking, fusion, BM25, language, citations, OCR, OpenAPI, MCP, tools, rendering, auth, agent loop
 npm run typecheck
 ```
 
@@ -882,6 +939,11 @@ app/
   api/danger-zone/route.ts     # Destructive resets: chats, documents, usage history, limits, memory
   api/export/route.ts          # Downloads the full data export as JSON
   api/import/route.ts          # Imports a previously-exported JSON file, additive-only
+lib/rich/
+  chart-spec.ts                # ```chart block format: parsing and validation
+  callouts.ts                  # remark plugin for > [!NOTE] style callouts
+  prompt.ts                    # Formatting guidance given to the model
+components/rich/               # ChartBlock, MermaidDiagram, CodeBlock
 lib/jobs/
   queue.ts                     # Postgres job queue: enqueue, claim (SKIP LOCKED), retry with backoff
   processors.ts                # Ingest (OCR, language, chunk, embed) and re-embed jobs
@@ -914,7 +976,11 @@ lib/rag/
   clients.ts                   # getOpenRouter() (OpenAI SDK), getAgentModel() (AI SDK), getCohere()
 lib/agent/
   tools.ts                     # Built-in tools: search_documents, list_documents, web_search, calculator, current_datetime, remember, list_memories, forget
-  custom-tools.ts               # Loads custom tools from DB, executes them over HTTP
+  custom-tools.ts              # Custom tools: request building (connections, auth, methods) + execution
+  connections.ts               # API connection records and validation (secrets stay server-side)
+  openapi.ts                   # OpenAPI 3 / Swagger 2 -> tool definitions
+  mcp.ts                       # MCP servers: connect, list tools, per-turn tool sessions
+  tool-validation.ts           # Shared validation for tool create/update/import
   ssrf-guard.ts                  # Blocks custom tool calls to private/internal addresses
   loop.ts                        # Agent orchestration on the Vercel AI SDK, with step recording + timing
   model-check.ts                 # Checks the configured model's tool support + lists free models

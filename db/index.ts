@@ -12,6 +12,8 @@ import {
   agentMemoriesTable,
   stageTimingsTable,
   jobsTable,
+  apiConnectionsTable,
+  mcpServersTable,
 } from "./schema";
 
 const schema = {
@@ -26,6 +28,8 @@ const schema = {
   agentMemories: agentMemoriesTable,
   stageTimings: stageTimingsTable,
   jobs: jobsTable,
+  apiConnections: apiConnectionsTable,
+  mcpServers: mcpServersTable,
 };
 
 let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
@@ -60,4 +64,6 @@ export {
   agentMemoriesTable,
   stageTimingsTable,
   jobsTable,
+  apiConnectionsTable,
+  mcpServersTable,
 };

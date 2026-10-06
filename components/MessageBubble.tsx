@@ -6,7 +6,13 @@ import type { Components } from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
-import { AlertTriangle, Bot, BookOpen, Clock, Copy, Check, Pencil, ChevronLeft, ChevronRight } from "lucide-react";
+import rehypeHighlight from "rehype-highlight";
+import { remarkCallouts } from "@/lib/rich/callouts";
+import { ChartBlock } from "./rich/ChartBlock";
+import { MermaidDiagram } from "./rich/MermaidDiagram";
+import { CodeBlock } from "./rich/CodeBlock";
+import "highlight.js/styles/github-dark.css";
+import { AlertTriangle, Bot, BookOpen, Clock, Copy, Check, Pencil, ChevronLeft, ChevronRight, Library } from "lucide-react";
 import type { ChatMessage, CitationCheck, Source } from "@/types";
 import { normalizeMathDelimiters } from "@/lib/markdown";
 import { PipelineStatus } from "./PipelineStatus";
@@ -225,6 +231,20 @@ export function MessageBubble({
             {message.content}
           </div>
         </div>
+        {message.documentScope && message.documentScope.length > 0 && (
+          <div
+            className="flex items-center gap-1 mt-1 mr-1 text-[10px] text-brass-300/90 max-w-[75%]"
+            title={message.documentScope.map((d) => d.name).join("\n")}
+          >
+            <Library size={10} className="shrink-0" />
+            <span className="truncate">
+              Searched in{" "}
+              {message.documentScope.length <= 2
+                ? message.documentScope.map((d) => d.name).join(", ")
+                : `${message.documentScope[0].name} and ${message.documentScope.length - 1} more`}
+            </span>
+          </div>
+        )}
         {message.editGroupId && typeof versionIndex === "number" && versionCount ? (
           <div className="flex items-center gap-1 mt-1 mr-1 text-[10px] text-paper-400/70">
             <span>Edited</span>
@@ -297,6 +317,31 @@ export function MessageBubble({
         <table>{children}</table>
       </div>
     ),
+    // Fenced blocks: ```chart and ```mermaid become visuals, everything
+    // else a highlighted code block with a copy button.
+    pre: ({ node, children }) => {
+      const code = node?.children?.[0] as any;
+      const classes: string[] = code?.properties?.className ?? [];
+      const language = classes.find((c) => String(c).startsWith("language-"))?.slice("language-".length);
+      const raw = hastText(code);
+      if (language === "chart") return <ChartBlock source={raw} streaming={message.isStreaming} />;
+      if (language === "mermaid") return <MermaidDiagram source={raw} streaming={message.isStreaming} />;
+      return (
+        <CodeBlock language={language} raw={raw}>
+          {children}
+        </CodeBlock>
+      );
+    },
+    blockquote: ({ node, children }) => {
+      const kind = (node?.properties as any)?.dataCallout as string | undefined;
+      if (!kind) return <blockquote>{children}</blockquote>;
+      return (
+        <div className={`callout callout-${kind}`} role="note">
+          <p className="callout-title">{CALLOUT_TITLE[kind] ?? kind}</p>
+          {children}
+        </div>
+      );
+    },
   };
 
   return (
@@ -337,8 +382,8 @@ export function MessageBubble({
 
                   <div className="prose-answer text-[15px] text-paper-200 leading-relaxed">
                     <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
+                      remarkPlugins={[remarkGfm, remarkMath, remarkCallouts]}
+                      rehypePlugins={[rehypeKatex, [rehypeHighlight, { plainText: ["chart", "mermaid"] }]]}
                       components={components}
                     >
                       {prepareContent(message.content)}
@@ -456,4 +501,19 @@ function CitationCheckNotice({ check }: { check: CitationCheck }) {
       )}
     </div>
   );
+}
+
+const CALLOUT_TITLE: Record<string, string> = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
+};
+
+/** Plain text of a hast node (a code block's source, before highlighting spans). */
+function hastText(node: any): string {
+  if (!node) return "";
+  if (node.type === "text") return node.value ?? "";
+  return (node.children ?? []).map(hastText).join("");
 }
