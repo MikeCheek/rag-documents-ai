@@ -12,6 +12,7 @@ import {
   agentMemoriesTable,
   stageTimingsTable,
   jobsTable,
+  loginFailuresTable,
   apiConnectionsTable,
   mcpServersTable,
 } from "./schema";
@@ -28,6 +29,7 @@ const schema = {
   agentMemories: agentMemoriesTable,
   stageTimings: stageTimingsTable,
   jobs: jobsTable,
+  loginFailures: loginFailuresTable,
   apiConnections: apiConnectionsTable,
   mcpServers: mcpServersTable,
 };
@@ -64,6 +66,7 @@ export {
   agentMemoriesTable,
   stageTimingsTable,
   jobsTable,
+  loginFailuresTable,
   apiConnectionsTable,
   mcpServersTable,
 };

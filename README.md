@@ -915,6 +915,8 @@ request.
   - Five failed attempts from one address within 15 minutes lock that
     address out until the window passes; failures are also slowed down, and
     the message never says whether the username or the password was wrong.
+    Failures are stored in the database (`login_failures`), so a restart
+    doesn't reset the count and every server process shares it.
   - "Sign out" is in the top bar. If a session expires while the app is
     open, the next request sends you back to sign in, then returns you.
   - Serve the app over HTTPS anywhere other than localhost, so the password

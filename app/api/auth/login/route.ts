@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Sign-in isn't enabled (APP_PASSWORD is not set)." }, { status: 400 });
 
   const key = clientKey(req);
-  const wait = retryAfterMs(key);
+  const wait = await retryAfterMs(key);
   if (wait > 0) {
     const minutes = Math.ceil(wait / 60_000);
     return NextResponse.json(
@@ -45,12 +45,12 @@ export async function POST(req: NextRequest) {
   const userOk = safeEqual(username, auth.username);
   const passOk = safeEqual(password, auth.password);
   if (!userOk || !passOk) {
-    recordFailure(key);
+    await recordFailure(key);
     await new Promise((r) => setTimeout(r, 400));
     return NextResponse.json({ error: "Wrong username or password." }, { status: 401 });
   }
 
-  clearFailures(key);
+  await clearFailures(key);
   const maxAge = remember ? SESSION_DAYS_REMEMBERED * 24 * 3600 : SESSION_HOURS_DEFAULT * 3600;
   const res = NextResponse.json({ ok: true });
   res.cookies.set(SESSION_COOKIE, await createSessionToken(auth, maxAge), {

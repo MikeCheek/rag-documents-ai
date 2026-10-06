@@ -293,3 +293,16 @@ export type InsertAgentMemory = typeof agentMemoriesTable.$inferInsert;
 export type SelectAgentMemory = typeof agentMemoriesTable.$inferSelect;
 export type InsertStageTiming = typeof stageTimingsTable.$inferInsert;
 export type SelectStageTiming = typeof stageTimingsTable.$inferSelect;
+
+// Failed sign-in attempts, for the login rate limit (lib/auth/login-limiter.ts).
+export const loginFailuresTable = pgTable(
+  "login_failures",
+  {
+    id: serial("id").primaryKey(),
+    clientKey: text("client_key").notNull(),
+    failedAt: timestamp("failed_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    clientKeyIdx: index("login_failures_client_key_idx").on(table.clientKey, table.failedAt),
+  })
+);

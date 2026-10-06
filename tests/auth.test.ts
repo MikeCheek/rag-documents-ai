@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import {
   authConfig,
@@ -61,17 +61,22 @@ describe("safeEqual", () => {
 });
 
 describe("login limiter", () => {
-  it("blocks after too many failures, until the window passes", () => {
+  // Without a database this exercises the in-memory fallback; the
+  // Postgres path is covered in tests/login-limiter.integration.test.ts.
+  beforeAll(() => {
+    delete process.env.DATABASE_URL;
+  });
+  it("blocks after too many failures, until the window passes", async () => {
     const now = 1_000_000;
-    for (let i = 0; i < MAX_FAILURES - 1; i++) recordFailure("ip1", now);
-    expect(retryAfterMs("ip1", now)).toBe(0);
-    recordFailure("ip1", now);
-    expect(retryAfterMs("ip1", now)).toBe(WINDOW_MS);
-    expect(retryAfterMs("ip1", now + WINDOW_MS)).toBe(0);
-    expect(retryAfterMs("ip2", now)).toBe(0);
-    recordFailure("ip3", now);
-    clearFailures("ip3");
-    expect(retryAfterMs("ip3", now)).toBe(0);
+    for (let i = 0; i < MAX_FAILURES - 1; i++) await recordFailure("ip1", now);
+    expect(await retryAfterMs("ip1", now)).toBe(0);
+    await recordFailure("ip1", now);
+    expect(await retryAfterMs("ip1", now)).toBe(WINDOW_MS);
+    expect(await retryAfterMs("ip1", now + WINDOW_MS)).toBe(0);
+    expect(await retryAfterMs("ip2", now)).toBe(0);
+    await recordFailure("ip3", now);
+    await clearFailures("ip3");
+    expect(await retryAfterMs("ip3", now)).toBe(0);
   });
 });
 
