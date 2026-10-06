@@ -36,3 +36,45 @@ export function makePdf(pages: string[][]): Buffer {
   out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, "latin1");
 }
+
+/** Builds an image-only PDF (like a scan): one JPEG per page, no text layer. */
+export function makeImagePdf(pages: { jpeg: Buffer; width: number; height: number }[]): Buffer {
+  const parts: (string | Buffer)[] = [];
+  const offsets: number[] = [];
+  let length = 0;
+  const push = (chunk: string | Buffer) => {
+    parts.push(chunk);
+    length += typeof chunk === "string" ? Buffer.byteLength(chunk, "latin1") : chunk.length;
+  };
+  const obj = (id: number, body: (string | Buffer)[]) => {
+    offsets[id] = length;
+    push(`${id} 0 obj\n`);
+    body.forEach(push);
+    push("\nendobj\n");
+  };
+
+  push("%PDF-1.4\n");
+  const pageIds = pages.map((_, i) => 3 + i * 3);
+  obj(1, ["<< /Type /Catalog /Pages 2 0 R >>"]);
+  obj(2, [`<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`]);
+  pages.forEach((page, i) => {
+    const [pageId, contentId, imageId] = [3 + i * 3, 4 + i * 3, 5 + i * 3];
+    const ops = "q 612 0 0 792 0 0 cm /Im0 Do Q";
+    obj(pageId, [
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im0 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`,
+    ]);
+    obj(contentId, [`<< /Length ${ops.length} >>\nstream\n${ops}\nendstream`]);
+    obj(imageId, [
+      `<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`,
+      page.jpeg,
+      "\nendstream",
+    ]);
+  });
+
+  const count = 3 + pages.length * 3;
+  const xref = length;
+  push(`xref\n0 ${count}\n0000000000 65535 f \n`);
+  for (let id = 1; id < count; id++) push(`${String(offsets[id]).padStart(10, "0")} 00000 n \n`);
+  push(`trailer\n<< /Size ${count} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return Buffer.concat(parts.map((p) => (typeof p === "string" ? Buffer.from(p, "latin1") : p)));
+}

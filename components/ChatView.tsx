@@ -38,6 +38,7 @@ function storedToChatMessage(m: StoredChatMessage): ChatMessage {
     apiCallCount: m.apiCallCount ?? undefined,
     durationMs: m.durationMs ?? undefined,
     editGroupId: m.editGroupId ?? undefined,
+    citationCheck: m.citationCheck ?? undefined,
   };
 }
 
@@ -250,6 +251,8 @@ export function ChatView({
             onChatCreated(event.chat);
           } else if (event.type === "stage") {
             update({ stage: event.stage, stageDetail: event.detail });
+          } else if (event.type === "citation_check") {
+            update({ citationCheck: event.citationCheck });
           } else if (event.type === "sources") {
             update({ sources: event.sources as Source[], rerankMethod: event.rerankMethod });
           } else if (event.type === "agent_step") {

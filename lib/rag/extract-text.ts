@@ -38,12 +38,9 @@ export async function extractText(
     try {
       const { text: rawPages } = await extractPdfText(pdf, { mergePages: false });
       const pages = rawPages.map((p) => sanitizeExtractedText(dehyphenate(p)));
+      // Pages without a text layer (scans) come back empty here; the
+      // ingestion job OCRs them (lib/rag/ocr.ts).
       const text = pages.join("\n\n");
-      if (!text.trim() && pages.length > 0) {
-        throw new Error(
-          `This PDF has ${pages.length} page(s) but no text layer — it's probably scanned images. Run it through OCR first (e.g. \`ocrmypdf input.pdf output.pdf\`) and upload the result.`
-        );
-      }
       return { text, pages };
     } finally {
       // Frees the document and its worker-side resources.

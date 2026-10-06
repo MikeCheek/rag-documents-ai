@@ -18,9 +18,11 @@ describe("extractText (PDF)", () => {
     expect(pages![0]).toBe("The mitochondria are here. A well-\nKnown name.");
   });
 
-  it("explains a PDF with no text layer instead of a generic failure", async () => {
+  it("returns empty pages for a PDF with no text layer, for OCR to fill in", async () => {
     const pdf = makePdf([[], []]);
-    await expect(extractText(pdf, "scan.pdf", "application/pdf")).rejects.toThrow(/no text layer[\s\S]*OCR/);
+    const { pages, text } = await extractText(pdf, "scan.pdf", "application/pdf");
+    expect(pages).toEqual(["", ""]);
+    expect(text.trim()).toBe("");
   });
 
   it("returns no pages for unpaged formats", async () => {

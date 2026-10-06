@@ -1,7 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ["@xenova/transformers", "unpdf", "mammoth", "postgres"],
+    // Starts the background worker on server boot (instrumentation.ts).
+    instrumentationHook: true,
+    serverComponentsExternalPackages: [
+      "@xenova/transformers",
+      "unpdf",
+      "mammoth",
+      "postgres",
+      "tesseract.js",
+      "@napi-rs/canvas",
+    ],
   },
   webpack: (config, { isServer }) => {
     if (!isServer) {

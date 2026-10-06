@@ -23,7 +23,14 @@ describe.skipIf(!url)("export/import round trip (real Postgres)", () => {
 
     const [doc] = await db
       .insert(schema.documentsTable)
-      .values({ name: `${TAG}.pdf`, fileType: "pdf", status: "ready", chunkCount: 2 })
+      .values({
+        name: `${TAG}.pdf`,
+        fileType: "pdf",
+        status: "ready",
+        chunkCount: 2,
+        language: "english",
+        embeddingModel: (await import("@/lib/rag/embeddings")).currentEmbeddingModel(),
+      })
       .returning();
     const embedding = Array.from({ length: 384 }, (_, i) => (i === 0 ? 1 : 0));
     await db.insert(schema.chunksTable).values([

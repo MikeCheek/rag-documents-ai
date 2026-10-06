@@ -1,4 +1,6 @@
 import { eq } from "drizzle-orm";
+import { currentEmbeddingModel, LEGACY_EMBEDDING_MODEL } from "./embeddings";
+import { enqueueJob } from "@/lib/jobs/queue";
 import {
   getDb,
   documentsTable,
@@ -30,6 +32,10 @@ export type ExportBundle = {
     chunkCount: number;
     charCount: number;
     createdAt: string;
+    // Optional so export files from older versions still import (they were
+    // all English-indexed and embedded with the legacy model).
+    language?: string;
+    embeddingModel?: string | null;
     chunks: Array<{
       chunkIndex: number;
       content: string;
@@ -38,6 +44,7 @@ export type ExportBundle = {
       // Optional so export files from before page tracking still import.
       pageStart?: number | null;
       pageEnd?: number | null;
+      tsConfig?: string;
     }>;
   }>;
   chats: Array<{
@@ -55,6 +62,7 @@ export type ExportBundle = {
       agentSteps: unknown;
       apiCallCount: number | null;
       durationMs: number | null;
+      citationCheck?: unknown;
       createdAt: string;
     }>;
   }>;
@@ -108,6 +116,8 @@ export async function exportAllData(): Promise<ExportBundle> {
       chunkCount: doc.chunkCount,
       charCount: doc.charCount,
       createdAt: doc.createdAt.toISOString(),
+      language: doc.language,
+      embeddingModel: doc.embeddingModel ?? LEGACY_EMBEDDING_MODEL,
       chunks: (chunksByDoc.get(doc.id) ?? [])
         .sort((a, b) => a.chunkIndex - b.chunkIndex)
         .map((c) => ({
@@ -117,6 +127,7 @@ export async function exportAllData(): Promise<ExportBundle> {
           usageCount: c.usageCount,
           pageStart: c.pageStart,
           pageEnd: c.pageEnd,
+          tsConfig: c.tsConfig,
         })),
     })),
     chats: chats.map((chat) => ({
@@ -136,6 +147,7 @@ export async function exportAllData(): Promise<ExportBundle> {
           agentSteps: m.agentSteps,
           apiCallCount: m.apiCallCount,
           durationMs: m.durationMs,
+          citationCheck: m.citationCheck,
           createdAt: m.createdAt.toISOString(),
         })),
     })),
@@ -203,6 +215,8 @@ export async function importAllData(bundle: ExportBundle): Promise<ImportSummary
         chunkCount: doc.chunkCount,
         charCount: doc.charCount,
         createdAt: new Date(doc.createdAt),
+        language: doc.language ?? "english",
+        embeddingModel: doc.embeddingModel ?? LEGACY_EMBEDDING_MODEL,
       })
       .returning({ id: documentsTable.id });
 
@@ -218,6 +232,7 @@ export async function importAllData(bundle: ExportBundle): Promise<ImportSummary
           usageCount: c.usageCount ?? 0,
           pageStart: c.pageStart ?? null,
           pageEnd: c.pageEnd ?? null,
+          tsConfig: c.tsConfig ?? doc.language ?? "english",
         }))
       );
       summary.chunks += doc.chunks.length;
@@ -226,6 +241,16 @@ export async function importAllData(bundle: ExportBundle): Promise<ImportSummary
     // Re-derive the centroid rather than trust an exported one — it's
     // cheap (the embeddings are already right here) and avoids importing
     // a stale value if this document's chunks changed between versions.
+    // Vectors from another embedding model aren't comparable with this
+    // deployment's; the background worker re-embeds the imported text.
+    if ((doc.embeddingModel ?? LEGACY_EMBEDDING_MODEL) !== currentEmbeddingModel() && doc.chunks?.length) {
+      await enqueueJob({ type: "reembed", documentId: inserted.id });
+      await db
+        .update(documentsTable)
+        .set({ status: "queued", stage: "reembedding" })
+        .where(eq(documentsTable.id, inserted.id));
+    }
+
     if (doc.chunks?.length) {
       const { computeCentroid } = await import("./clustering");
       const centroid = computeCentroid(
@@ -265,6 +290,7 @@ export async function importAllData(bundle: ExportBundle): Promise<ImportSummary
           agentSteps: m.agentSteps ?? undefined,
           apiCallCount: m.apiCallCount ?? undefined,
           durationMs: m.durationMs ?? undefined,
+          citationCheck: m.citationCheck ?? undefined,
           createdAt: new Date(m.createdAt),
         }))
       );

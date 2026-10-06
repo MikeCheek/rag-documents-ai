@@ -45,6 +45,10 @@ create table if not exists chat_messages (
 create index if not exists chat_messages_chat_id_index
   on chat_messages (chat_id);
 
+-- Result of checking an answer's citations against its sources
+-- (lib/rag/citation-check.ts); null for user messages and older answers.
+alter table chat_messages add column if not exists citation_check jsonb;
+
 create index if not exists chat_messages_edit_group_id_index
   on chat_messages (edit_group_id);
 

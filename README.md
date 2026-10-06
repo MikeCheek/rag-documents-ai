@@ -112,16 +112,29 @@ Its own full page (not a sidebar tab), with documents shown as tiles in a
 responsive grid rather than a list:
 
 - Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV) from the upload
-  zone at the top. Each upload streams live progress: reading → chunking →
-  embedding → storing.
+  zone at the top. **Indexing runs in the background**: the upload only
+  reads the file (seconds), then a background worker OCRs, chunks and
+  embeds it. Each tile shows what's happening ("Reading scanned pages
+  3/10", "Indexing passages 40/120") with a progress bar, and the work
+  carries on if you close the tab. A document that fails gets a Retry
+  button. See [Background processing](#background-processing).
 - **PDFs keep their page numbers.** Each passage records the page(s) it
   came from, shown on the source chips and in the Sources panel ("p. 4",
   "pp. 4–5") and given to the model alongside the excerpt. Words hyphenated
-  across a line break are rejoined. A scanned PDF with no text layer is
-  rejected with a clear message to run OCR first (e.g. `ocrmypdf`) rather
-  than a generic failure. PDFs uploaded before page tracking existed show
-  no page until re-uploaded.
-- Each tile shows a status badge (processing / ready / failed), passage
+  across a line break are rejoined. PDFs uploaded before page tracking
+  existed show no page until re-uploaded.
+- **Scanned PDFs are OCR'd, offline.** Pages without a text layer (scans,
+  photographed pages) are rendered and read with tesseract.js, using
+  language data installed from npm, so no image ever leaves the machine.
+  Only pages that need it are OCR'd, so a mostly-digital PDF with a few
+  scanned pages costs only those pages (about 1-3 s each). Languages are
+  set with `OCR_LANGUAGES` (default `eng+ita`); add one with
+  `npm install @tesseract.js-data/<code>` (e.g. `fra`, `deu`, `spa`).
+- **Any language.** Each document's language is detected when it's
+  indexed and shown on its tile, and keyword search stems it in that
+  language. The default embedding model is multilingual, so a question in
+  one language finds passages in another. See [Languages](#languages).
+- Each tile shows a status badge (queued / processing / ready / failed), passage
   count and extracted character count once ready, file type, and upload
   time.
 - **Filter** by name (search box), status, or file type (type filters only
@@ -525,19 +538,21 @@ real network connection; every use after that doesn't.
 ## How it works
 
 ```
-Upload:  file -> extract text -> sentence-aware chunks -> embed (local, Xenova) -> Supabase (pgvector)
+Upload:  file -> extract text -> queue a job
+Worker:  OCR pages without text -> detect language -> sentence-aware chunks
+         -> embed (local, multilingual-e5-small) -> Supabase (pgvector)
 
 Chat:    question -> optimize query -> hybrid search: vector (pgvector) + keyword (Postgres full-text),
                                        fused with Reciprocal Rank Fusion
-                   -> rerank -> answer with citations (streamed)
+                   -> rerank -> add neighboring passages -> answer with citations (streamed)
+                   -> check citations against the sources
 ```
 
 - **Chunking** follows paragraph and sentence boundaries, at up to ~180
-  words per chunk with a sentence or two of overlap. The size is set by
-  the embedding model: `all-MiniLM-L6-v2` only reads the first 256 tokens
-  (~190 words) of its input, so anything past that in a longer chunk would
-  be invisible to vector search. Documents uploaded before this change keep
-  their old chunks until re-uploaded.
+  words per chunk with a sentence or two of overlap, small enough that the
+  whole chunk fits in the embedding model's input window in any language
+  (anything past it would be invisible to vector search). Documents
+  uploaded before this change keep their old chunks until re-uploaded.
 - **Hybrid search**: every question runs two searches in parallel, a
   semantic one (pgvector cosine distance, served by the HNSW index) that
   finds paraphrases, and a keyword one (Postgres full-text search with a
@@ -545,12 +560,29 @@ Chat:    question -> optimize query -> hybrid search: vector (pgvector) + keywor
   embedding tends to blur. The two ranked lists are merged with
   [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf),
   which combines by rank rather than score, so the two different scoring
-  scales need no tuning. Keyword search needs the `content_tsv` column (baseline `0001`, or `0008_hybrid_search.sql` for older databases).
-  Without it the app logs a warning once and falls back to vector-only
-  search.
+  scales need no tuning. The keyword half runs once per language present
+  among your documents, each stemmed in its own language.
+- **Neighboring passages**: each source given to the model also carries
+  the end of the passage before it and the start of the one after it
+  (overlap removed, ~120 words each side), because the sentence that
+  answers a question often sits just across a chunk boundary. Citations
+  still point at the source itself. Agent mode's `search_documents`
+  returns the same expanded excerpts.
+- **Citation check**: after each answer, every sentence that cites a
+  source is checked against the text it cites (`lib/rag/citation-check.ts`),
+  locally and instantly. It flags citations to sources that don't exist,
+  figures (2+ digits, decimals, percentages) that appear in none of the
+  cited passages, and sentences that share almost no key words with their
+  sources. Flags appear as a collapsed "N statements to double-check" note
+  under the answer, saved with it. It's a prompt to look, not proof: a
+  correct paraphrase can be flagged as weakly supported, and a wrong claim
+  that reuses the source's words can pass. The word-overlap check is
+  skipped when the answer and source are in different languages, since a
+  translation shares few words with its source by nature.
 
-- **Embeddings** run locally via `@xenova/transformers` (`all-MiniLM-L6-v2`,
-  384 dimensions) — no API key, no per-call cost, always on.
+- **Embeddings** run locally via `@xenova/transformers`
+  (`multilingual-e5-small`, 384 dimensions) — no API key, no per-call
+  cost, always on. See [Languages](#languages).
 - **Answers** are generated through [OpenRouter](https://openrouter.ai) —
   RAG mode and query optimization use the OpenAI SDK pointed at
   OpenRouter's OpenAI-compatible endpoint; Agent mode uses the Vercel AI
@@ -560,6 +592,53 @@ Chat:    question -> optimize query -> hybrid search: vector (pgvector) + keywor
   no OpenAI account is needed.
 - **Query optimization and reranking are both configurable** from the
   Settings screen (see [API usage](#api-usage)).
+
+## Background processing
+
+Uploading only reads the file; everything slow happens in a background
+worker (`lib/jobs/`): OCR, chunking, embedding, and re-embedding when the
+embedding model changes. Jobs live in a Postgres `jobs` table, so they
+survive restarts and need no extra infrastructure.
+
+- The worker starts with the server (`npm run dev` / `npm start`, via
+  `instrumentation.ts`) and works through jobs one at a time.
+- A failed job is retried up to 3 times, waiting 30 s, then 60 s between
+  attempts (`JOB_RETRY_DELAY_SECONDS`), so a brief outage doesn't use up
+  every attempt. OCR results are kept between attempts, so a retry doesn't
+  redo the slow part. After the last attempt the document shows the error
+  and a Retry button.
+- If the server stops mid-job, the job is picked up again once its lock
+  goes stale (15 minutes without progress). Claiming uses `FOR UPDATE SKIP
+  LOCKED`, so several workers can safely share one database.
+- On every start, the worker queues any document embedded with a different
+  model for re-embedding (see [Languages](#languages)), and marks documents
+  left half-processed by the old in-request upload flow as failed.
+- **Serverless hosting** can't keep a loop running between requests. There,
+  set `DISABLE_BACKGROUND_WORKER=1` and run `npm run worker` on any machine
+  that can reach the database.
+
+## Languages
+
+- **Embeddings** use `multilingual-e5-small`, which places ~100 languages
+  in one shared space: an Italian question finds an English passage and
+  the other way round. It has the same 384 dimensions as the English-only
+  `all-MiniLM-L6-v2` used before, so no database changes were needed.
+  `EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2` switches back.
+- **Switching models re-embeds automatically.** Vectors from two models
+  aren't comparable, so each document records the model that embedded it
+  and search only uses documents embedded with the current one. When the
+  server starts with a different model (including the first start after
+  upgrading from the English-only model), the background worker re-embeds
+  every document. Each document is unavailable to search until its own
+  re-embedding finishes; the Shelf shows the progress.
+- **Keyword search** stems each document in its own language: the language
+  is detected from the document's text (English, Italian, French, German,
+  Spanish, Portuguese or Dutch; anything else is indexed without stemming)
+  and shown on its tile.
+- **Local query optimization** (wink-nlp) only knows English, so questions
+  in other languages skip it and go to search as written. Postgres's
+  per-language stemming does that job instead.
+- **OCR** reads the languages in `OCR_LANGUAGES` (default `eng+ita`).
 
 ## API usage
 
@@ -675,6 +754,7 @@ tracking.
 0007_voice_model_setting.sql  -- upgrade: Whisper model setting
 0008_hybrid_search.sql        -- upgrade: full-text column + GIN index for hybrid search
 0009_chunk_pages.sql          -- upgrade: PDF page range per chunk, for page citations
+0010_jobs_and_multilingual.sql -- upgrade: background jobs, per-document language and embedding model, citation checks
 ```
 
 The six baseline files (0000-0005) are organized by what each table *is*
@@ -735,14 +815,16 @@ usage and passage usage like normal questions.
 ### 7. Tests
 
 ```bash
-npm test           # unit tests: chunking, rank fusion, BM25, network guard, auth, agent loop
+npm test           # unit tests: chunking, fusion, BM25, language, citations, OCR, network guard, auth, agent loop
 npm run typecheck
 ```
 
 The agent-loop tests drive the real Vercel AI SDK loop with the SDK's mock
-model, so they need no API key. The hybrid-retrieval integration test runs
-only when `TEST_DATABASE_URL` points at a Postgres with pgvector and all
-migrations applied (it inserts and then deletes its own rows):
+model, so they need no API key. The OCR tests run real tesseract on
+generated scanned pages, offline. The database tests (hybrid and
+per-language retrieval, background jobs, export/import) run only when
+`TEST_DATABASE_URL` points at a Postgres with pgvector and all migrations
+applied (they insert and then delete their own rows):
 
 ```bash
 TEST_DATABASE_URL=postgresql://postgres@localhost:5432/rag_test npm test
@@ -800,8 +882,17 @@ app/
   api/danger-zone/route.ts     # Destructive resets: chats, documents, usage history, limits, memory
   api/export/route.ts          # Downloads the full data export as JSON
   api/import/route.ts          # Imports a previously-exported JSON file, additive-only
+lib/jobs/
+  queue.ts                     # Postgres job queue: enqueue, claim (SKIP LOCKED), retry with backoff
+  processors.ts                # Ingest (OCR, language, chunk, embed) and re-embed jobs
+  worker.ts                    # Worker loop + startup reconciliation; started by instrumentation.ts
 lib/rag/
-  embeddings.ts                # Local Xenova embeddings
+  embeddings.ts                # Local Xenova embeddings (multilingual-e5 by default, query/passage prefixes)
+  language.ts                  # Stopword-based language detection -> Postgres text-search config
+  ocr.ts                       # Offline OCR of PDF pages without a text layer (unpdf + tesseract.js)
+  context.ts                   # Neighboring-passage expansion for the model's context
+  citation-check.ts            # Post-answer check of [n] citations against their sources
+  searchable.ts                # "Ready and embedded with the current model" condition
   extract-text.ts              # PDF (per page, via unpdf) / DOCX / TXT extraction
   chunk.ts                     # Sentence-aware overlapping chunking
   local-nlp.ts                 # Free local tokenizer: stopwords + lemmatization (wink-nlp)

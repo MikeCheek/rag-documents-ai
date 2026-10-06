@@ -16,9 +16,14 @@ export type Source = {
   /** Source PDF page range; absent/null for unpaged formats and older chunks. */
   pageStart?: number | null;
   pageEnd?: number | null;
+  /** Position within its document (absent on answers saved before it existed). */
+  chunkIndex?: number;
 };
 
 export type RerankResultMethod = "cohere" | "bm25" | "vector";
+
+export type { CitationCheck, CitationIssue } from "@/lib/rag/citation-check";
+import type { CitationCheck } from "@/lib/rag/citation-check";
 
 export type AgentStep =
   | { type: "message"; content: string }
@@ -37,13 +42,14 @@ export type ChatMessage = {
   durationMs?: number;
   createdAt?: string;
   editGroupId?: string | null;
+  citationCheck?: CitationCheck | null;
   stage?: string;
   stageDetail?: string;
   isStreaming?: boolean;
   error?: string;
 };
 
-export type DocumentStatus = "processing" | "ready" | "failed";
+export type DocumentStatus = "queued" | "processing" | "ready" | "failed";
 
 export type DocumentRecord = {
   id: string;
@@ -53,6 +59,12 @@ export type DocumentRecord = {
   error?: string | null;
   chunkCount: number;
   charCount: number;
+  /** Postgres text-search config of the detected language, e.g. "italian". */
+  language?: string;
+  /** While queued/processing: queued | ocr | embedding | reembedding. */
+  stage?: string | null;
+  progressDone?: number;
+  progressTotal?: number;
   createdAt: string;
 };
 
@@ -166,6 +178,7 @@ export type StoredChatMessage = {
   apiCallCount: number | null;
   durationMs: number | null;
   editGroupId: string | null;
+  citationCheck?: CitationCheck | null;
   createdAt: string;
 };
 

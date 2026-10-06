@@ -2,7 +2,7 @@ import { and, asc, cosineDistance, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb, chunksTable, documentsTable } from "@/db";
 import { generateEmbedding } from "./embeddings";
 import { reciprocalRankFusion } from "./fusion";
-import { isSchemaOutOfDate } from "@/lib/db-errors";
+import { searchableDocument } from "./searchable";
 
 export type RetrievedChunk = {
   chunkId: number;
@@ -12,6 +12,8 @@ export type RetrievedChunk = {
   similarity: number;
   pageStart: number | null;
   pageEnd: number | null;
+  /** Position within its document; used to fetch neighboring chunks. */
+  chunkIndex: number;
 };
 
 export type RetrieveOptions = {
@@ -62,7 +64,7 @@ export async function retrieveChunks(
 
 function inScope(documentIds: string[] | undefined) {
   return and(
-    eq(documentsTable.status, "ready"),
+    searchableDocument(),
     documentIds ? inArray(chunksTable.documentId, documentIds) : undefined
   );
 }
@@ -99,6 +101,7 @@ async function vectorSearch(
       documentId: chunksTable.documentId,
       documentName: documentsTable.name,
       content: chunksTable.content,
+      chunkIndex: chunksTable.chunkIndex,
       pageStart: chunksTable.pageStart,
       pageEnd: chunksTable.pageEnd,
       similarity: similarityTo(queryEmbedding),
@@ -127,56 +130,66 @@ export function toOrTsQuery(text: string): string {
   return Array.from(terms).join(" | ");
 }
 
-let keywordSearchUnavailable = false;
-
+/**
+ * Keyword half of hybrid search. Each document's chunks are indexed with
+ * their own language's stemming (chunks.ts_config, detected at
+ * ingestion), so the query is run once per language present among the
+ * searchable documents, stemmed the same way — "mitocondri" then matches
+ * "mitocondrio" in an Italian document, while English documents keep
+ * English stemming. Each per-language query uses the GIN index, since its
+ * tsquery is a constant. Results are merged by rank.
+ */
 async function keywordSearch(
   text: string,
   queryEmbedding: number[],
   limit: number,
   documentIds?: string[]
 ): Promise<RetrievedChunk[]> {
-  if (keywordSearchUnavailable) return [];
   const tsQuery = toOrTsQuery(text);
   if (!tsQuery) return [];
 
   const db = getDb();
-  const query = sql`to_tsquery('english', ${tsQuery})`;
-  const rank = sql<number>`ts_rank_cd(${sql.raw('"chunks"."content_tsv"')}, ${query})`;
+  const languages = await db
+    .selectDistinct({ language: documentsTable.language })
+    .from(documentsTable)
+    .where(
+      and(searchableDocument(), documentIds ? inArray(documentsTable.id, documentIds) : undefined)
+    );
 
-  try {
-    const rows = await db
-      .select({
-        chunkId: chunksTable.id,
-        documentId: chunksTable.documentId,
-        documentName: documentsTable.name,
-        content: chunksTable.content,
-        pageStart: chunksTable.pageStart,
-        pageEnd: chunksTable.pageEnd,
-        similarity: similarityTo(queryEmbedding),
-      })
-      .from(chunksTable)
-      .innerJoin(documentsTable, eq(chunksTable.documentId, documentsTable.id))
-      .where(
-        and(inScope(documentIds), sql`${sql.raw('"chunks"."content_tsv"')} @@ ${query}`)
-      )
-      .orderBy(desc(rank))
-      .limit(limit);
+  const perLanguage = await Promise.all(
+    languages.map(async ({ language }) => {
+      const query = sql`to_tsquery(${language}::regconfig, ${tsQuery})`;
+      const rank = sql<number>`ts_rank_cd(${sql.raw('"chunks"."content_tsv"')}, ${query})`;
+      const rows = await db
+        .select({
+          chunkId: chunksTable.id,
+          documentId: chunksTable.documentId,
+          documentName: documentsTable.name,
+          content: chunksTable.content,
+          chunkIndex: chunksTable.chunkIndex,
+          pageStart: chunksTable.pageStart,
+          pageEnd: chunksTable.pageEnd,
+          similarity: similarityTo(queryEmbedding),
+          rank,
+        })
+        .from(chunksTable)
+        .innerJoin(documentsTable, eq(chunksTable.documentId, documentsTable.id))
+        .where(
+          and(
+            inScope(documentIds),
+            sql`${chunksTable.tsConfig} = ${language}::regconfig`,
+            sql`${sql.raw('"chunks"."content_tsv"')} @@ ${query}`
+          )
+        )
+        .orderBy(desc(rank))
+        .limit(limit);
+      return rows;
+    })
+  );
 
-    return rows.map((r) => ({ ...r, similarity: Number(r.similarity) }));
-  } catch (err: any) {
-    // The content_tsv column comes from migration 0008 (or the 0001 baseline). Until it's been
-    // run, degrade to vector-only search instead of failing every query.
-    // Only disable for good if it's specifically content_tsv that's
-    // missing; any other missing column (a different pending migration)
-    // fails the vector half too and surfaces as a "run db:migrate" error.
-    const pgMessage = String(err?.cause?.message ?? err?.message ?? "");
-    if (isSchemaOutOfDate(err) && pgMessage.includes("content_tsv")) {
-      keywordSearchUnavailable = true;
-      console.warn(
-        "Keyword search disabled: chunks.content_tsv is missing. Run `npm run db:migrate` to enable hybrid search."
-      );
-      return [];
-    }
-    throw err;
-  }
+  return perLanguage
+    .flat()
+    .sort((a, b) => Number(b.rank) - Number(a.rank))
+    .slice(0, limit)
+    .map(({ rank: _rank, ...r }) => ({ ...r, similarity: Number(r.similarity) }));
 }

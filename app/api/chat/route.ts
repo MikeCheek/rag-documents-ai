@@ -14,6 +14,9 @@ import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { ChatMode } from "@/types";
 import { formatPages } from "@/lib/utils";
 import { describeError } from "@/lib/db-errors";
+import { expandWithNeighbors } from "@/lib/rag/context";
+import { checkCitations, type CitationCheck } from "@/lib/rag/citation-check";
+import type { Source } from "@/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -134,6 +137,11 @@ export async function POST(req: NextRequest) {
         timing.record("total", durationMs);
 
         const wasStopped = req.signal.aborted;
+        const agentCitationCheck =
+          finalContent && !wasStopped && sources.length
+            ? runCitationCheck(finalContent, await citablePassages(sources))
+            : null;
+        if (agentCitationCheck) send({ type: "citation_check", citationCheck: agentCitationCheck });
         const persistedContent =
           finalContent || (wasStopped ? "_(Stopped before an answer was generated.)_" : "");
 
@@ -144,6 +152,7 @@ export async function POST(req: NextRequest) {
             role: "assistant",
             content: persistedContent,
             mode: "agent",
+            citationCheck: agentCitationCheck,
             agentSteps: steps.length ? steps : null,
             sources: sources.length ? sources : null,
             rerankMethod: sources.length ? rerankMethod : null,
@@ -183,6 +192,7 @@ export async function POST(req: NextRequest) {
       incrementChunkUsage(sources.map((s) => s.chunkId));
 
       let answer = "";
+      let expandedPassages: string[] = [];
       // Deterministic from settings: the pipeline makes exactly one
       // optimize_query call when that mode is "llm", and the final answer
       // call only happens when there are sources to answer from.
@@ -194,12 +204,10 @@ export async function POST(req: NextRequest) {
         send({ type: "token", content: answer });
       } else {
         llmCallCount++;
-        const context = sources
-          .map((s, i) => {
-            const pages = formatPages(s.pageStart, s.pageEnd);
-            return `[${i + 1}] (from "${s.documentName}"${pages ? `, ${pages}` : ""})\n${s.content}`;
-          })
-          .join("\n\n---\n\n");
+        // Each source carries its neighboring passages, for context the
+        // chunk boundary would otherwise cut off (lib/rag/context.ts).
+        expandedPassages = await citablePassages(sources);
+        const context = expandedPassages.join("\n\n---\n\n");
 
         const systemPrompt = summary
           ? `${SYSTEM_PROMPT_BASE}\n\nEarlier conversation summary, for context:\n${summary}`
@@ -266,6 +274,10 @@ export async function POST(req: NextRequest) {
       const persistedAnswer =
         answer || (req.signal.aborted ? "_(Stopped before an answer was generated.)_" : "");
 
+      const citationCheck =
+        answer && sources.length && !req.signal.aborted ? runCitationCheck(answer, expandedPassages) : null;
+      if (citationCheck) send({ type: "citation_check", citationCheck });
+
       const [assistantMessage] = await db
         .insert(chatMessagesTable)
         .values({
@@ -273,6 +285,7 @@ export async function POST(req: NextRequest) {
           role: "assistant",
           content: persistedAnswer,
           mode: "rag",
+          citationCheck,
           sources: sources.length ? sources : null,
           rerankMethod,
           apiCallCount: llmCallCount,
@@ -338,5 +351,28 @@ async function saveFailedTurn(
     await db.update(chatsTable).set({ updatedAt: new Date() }).where(eq(chatsTable.id, chatId));
   } catch (saveErr) {
     console.error("Failed to save interrupted turn:", saveErr);
+  }
+}
+
+/**
+ * Sources as the model sees them: a label (document, page) plus the
+ * passage with its neighbors stitched on. Used both to build the RAG
+ * prompt and to check the answer's citations against the same text.
+ */
+async function citablePassages(sources: Source[]): Promise<string[]> {
+  const expanded = await expandWithNeighbors(sources);
+  return sources.map((s, i) => {
+    const pages = formatPages(s.pageStart, s.pageEnd);
+    return `[${i + 1}] (from "${s.documentName}"${pages ? `, ${pages}` : ""})\n${expanded.get(s.chunkId) ?? s.content}`;
+  });
+}
+
+/** Never lets a checking bug break an answer that was already produced. */
+function runCitationCheck(answer: string, passages: string[]): CitationCheck | null {
+  try {
+    return checkCitations(answer, passages);
+  } catch (err) {
+    console.error("Citation check failed:", err);
+    return null;
   }
 }

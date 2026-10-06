@@ -1,4 +1,5 @@
 import {
+  customType,
   index,
   pgTable,
   serial,
@@ -24,8 +25,45 @@ export const documentsTable = pgTable("documents", {
   // when processing finishes — the basis for similarity-based grouping on
   // the Shelf, without re-scanning every chunk on every request.
   centroidEmbedding: vector("centroid_embedding", { dimensions: 384 }),
+  // Postgres text-search config name for the document's detected language
+  // (english, italian, ..., simple) — see lib/rag/language.ts.
+  language: text("language").notNull().default("english"),
+  // Model the chunks were embedded with; null = legacy all-MiniLM-L6-v2.
+  // Only documents embedded with the current model are searched, and the
+  // background worker re-embeds the rest (lib/jobs/worker.ts).
+  embeddingModel: text("embedding_model"),
+  // While not ready: what the background worker is doing, and how far.
+  stage: text("stage"), // queued | ocr | embedding | reembedding
+  progressDone: integer("progress_done").notNull().default(0),
+  progressTotal: integer("progress_total").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
+
+// Background job queue — see lib/jobs/queue.ts.
+export const jobsTable = pgTable(
+  "jobs",
+  {
+    id: serial("id").primaryKey(),
+    type: text("type").notNull(), // ingest | reembed
+    documentId: uuid("document_id").references(() => documentsTable.id, { onDelete: "cascade" }),
+    payload: jsonb("payload"),
+    file: bytea("file"),
+    status: text("status").notNull().default("queued"), // queued | running | done | failed
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    lockedAt: timestamp("locked_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    statusIdIndex: index("jobs_status_id_index").on(table.status, table.id),
+    documentIdIndex: index("jobs_document_id_index").on(table.documentId),
+  })
+);
 
 // One row per chunk of a document, with its embedding vector.
 // Xenova/all-MiniLM-L6-v2 outputs 384 dimensions.
@@ -44,6 +82,9 @@ export const chunksTable = pgTable(
     // null for formats without pages.
     pageStart: integer("page_start"),
     pageEnd: integer("page_end"),
+    // Text-search config (regconfig) for the chunk's language; drives the
+    // generated content_tsv column, which isn't mapped here.
+    tsConfig: text("ts_config").notNull().default("english"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -103,6 +144,7 @@ export const chatMessagesTable = pgTable(
     // message that's never been part of an edit has editGroupId: null.
     editGroupId: uuid("edit_group_id"),
     isActiveVersion: boolean("is_active_version").notNull().default(true),
+    citationCheck: jsonb("citation_check"), // CitationCheck | null — see lib/rag/citation-check.ts
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

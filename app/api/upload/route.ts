@@ -1,16 +1,15 @@
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
-import { getDb, documentsTable, chunksTable } from "@/db";
+import { getDb, documentsTable } from "@/db";
 import { extractText, isSupportedFile } from "@/lib/rag/extract-text";
-import { chunkPages, chunkText, type PagedChunk } from "@/lib/rag/chunk";
-import { generateEmbeddings } from "@/lib/rag/embeddings";
-import { computeCentroid } from "@/lib/rag/clustering";
+import { pagesNeedingOcr } from "@/lib/rag/ocr";
+import { enqueueJob } from "@/lib/jobs/queue";
 import { createEventStream } from "@/lib/stream";
 import { describeError } from "@/lib/db-errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 120;
 
 // Each file is read fully into memory and processed within this request,
 // so an unbounded upload could exhaust the server's memory or run past
@@ -57,79 +56,41 @@ export async function POST(req: NextRequest) {
           .values({
             name: file.name,
             fileType: file.name.split(".").pop()?.toLowerCase() || "txt",
-            status: "processing",
+            status: "queued",
+            stage: "queued",
           })
           .returning();
 
         send({ type: "document", document: serializeDoc(doc) });
 
+        // Only text extraction happens in this request (seconds, even for
+        // big files). OCR, chunking and embedding run in the background
+        // worker (lib/jobs/worker.ts), so they're not bound by this
+        // request's time limit and carry on if the browser goes away. The
+        // Shelf shows their progress.
         try {
           const buffer = Buffer.from(await file.arrayBuffer());
           const extracted = await extractText(buffer, file.name, file.type);
-          const text = extracted.text.trim();
+          const needsOcr = extracted.pages ? pagesNeedingOcr(extracted.pages).length > 0 : false;
 
-          if (!text) {
+          if (!extracted.text.trim() && !needsOcr) {
             throw new Error("No extractable text was found in this file.");
           }
 
-          send({ type: "stage", stage: "chunking", detail: file.name });
-          const pagedChunks: PagedChunk[] = extracted.pages
-            ? chunkPages(extracted.pages)
-            : chunkText(text).map((content) => ({ content, pageStart: null, pageEnd: null }));
-          const chunks = pagedChunks.map((c) => c.content);
-
-          if (chunks.length === 0) {
-            throw new Error("Text extraction produced no chunks.");
-          }
-
-          send({
-            type: "stage",
-            stage: "embedding",
-            detail: `0/${chunks.length} chunks · ${file.name}`,
+          await enqueueJob({
+            type: "ingest",
+            documentId: doc.id,
+            payload: extracted.pages
+              ? { pages: extracted.pages, text: null }
+              : { pages: null, text: extracted.text },
+            // The original PDF is only kept when pages must be rendered for OCR.
+            file: needsOcr ? buffer : undefined,
           });
-
-          const BATCH = 8;
-          const embeddings: number[][] = [];
-          for (let i = 0; i < chunks.length; i += BATCH) {
-            const batch = chunks.slice(i, i + BATCH);
-            const batchEmbeddings = await generateEmbeddings(batch);
-            embeddings.push(...batchEmbeddings);
-            send({
-              type: "stage",
-              stage: "embedding",
-              detail: `${embeddings.length}/${chunks.length} chunks · ${file.name}`,
-            });
-          }
-
-          send({ type: "stage", stage: "storing", detail: file.name });
-          await db.insert(chunksTable).values(
-            pagedChunks.map((chunk, index) => ({
-              documentId: doc.id,
-              chunkIndex: index,
-              content: chunk.content,
-              pageStart: chunk.pageStart,
-              pageEnd: chunk.pageEnd,
-              embedding: embeddings[index],
-            }))
-          );
-
-          const [updated] = await db
-            .update(documentsTable)
-            .set({
-              status: "ready",
-              chunkCount: chunks.length,
-              charCount: text.length,
-              centroidEmbedding: computeCentroid(embeddings),
-            })
-            .where(eq(documentsTable.id, doc.id))
-            .returning();
-
-          send({ type: "document", document: serializeDoc(updated) });
         } catch (fileErr: any) {
-          console.error(`Failed to process ${file.name}:`, fileErr);
+          console.error(`Failed to read ${file.name}:`, fileErr);
           const [failed] = await db
             .update(documentsTable)
-            .set({ status: "failed", error: describeError(fileErr, "Processing failed") })
+            .set({ status: "failed", stage: null, error: describeError(fileErr, "Processing failed") })
             .where(eq(documentsTable.id, doc.id))
             .returning();
           send({ type: "document", document: serializeDoc(failed) });
@@ -162,6 +123,10 @@ function serializeDoc(doc: any) {
     error: doc.error,
     chunkCount: doc.chunkCount,
     charCount: doc.charCount,
+    language: doc.language,
+    stage: doc.stage,
+    progressDone: doc.progressDone,
+    progressTotal: doc.progressTotal,
     createdAt: doc.createdAt,
   };
 }

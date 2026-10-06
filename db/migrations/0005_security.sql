@@ -17,3 +17,4 @@ alter table agent_tools enable row level security;
 alter table tool_call_log enable row level security;
 alter table agent_memories enable row level security;
 alter table settings enable row level security;
+alter table jobs enable row level security;

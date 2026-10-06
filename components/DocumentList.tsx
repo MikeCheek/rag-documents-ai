@@ -53,7 +53,7 @@ export function DocumentList({
               <p className="text-xs text-paper-400 truncate flex-1">
                 {doc.status === "ready" &&
                   `${doc.chunkCount} passages, ${formatBytes(doc.charCount)}`}
-                {doc.status === "processing" && "processing"}
+                {(doc.status === "processing" || doc.status === "queued") && "processing"}
                 {doc.status === "failed" && (doc.error || "failed")}
               </p>
               <span className="text-xs text-paper-400 shrink-0">{relativeTime(doc.createdAt)}</span>

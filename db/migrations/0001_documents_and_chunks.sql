@@ -33,13 +33,45 @@ create table if not exists chunks (
 -- below would then fail on the missing column.
 alter table chunks add column if not exists page_start integer; -- source PDF page range; null for unpaged formats
 alter table chunks add column if not exists page_end integer;
+-- Postgres text-search configuration for the chunk's language (english,
+-- italian, ... or simple), detected per document at ingestion
+-- (lib/rag/language.ts), so keyword search stems each language correctly.
+alter table chunks add column if not exists ts_config regconfig not null default 'english';
 -- Keyword half of hybrid search (lib/rag/retrieve.ts), kept in sync with
--- content automatically.
+-- content and language automatically.
 alter table chunks add column if not exists content_tsv tsvector
-  generated always as (to_tsvector('english', content)) stored;
+  generated always as (to_tsvector(ts_config, content)) stored;
 
 create index if not exists chunks_content_tsv_index
   on chunks using gin (content_tsv);
+
+-- Ingestion state shown on the Shelf while the background worker
+-- (lib/jobs/worker.ts) processes a document, plus what it was indexed with.
+alter table documents add column if not exists language text not null default 'english'; -- Postgres text-search config name
+alter table documents add column if not exists embedding_model text; -- null = legacy Xenova/all-MiniLM-L6-v2
+alter table documents add column if not exists stage text; -- queued | ocr | embedding | reembedding (while not ready)
+alter table documents add column if not exists progress_done integer not null default 0;
+alter table documents add column if not exists progress_total integer not null default 0;
+
+-- Background job queue (lib/jobs/queue.ts): ingestion and re-embedding run
+-- here rather than inside the upload request, so large files and OCR don't
+-- hit the request time limit or die when the browser goes away.
+create table if not exists jobs (
+  id serial primary key,
+  type text not null, -- ingest | reembed
+  document_id uuid references documents(id) on delete cascade,
+  payload jsonb, -- ingest: extracted pages/text, cleared when done
+  file bytea, -- original PDF bytes, only kept when pages need OCR
+  status text not null default 'queued', -- queued | running | done | failed
+  attempts integer not null default 0,
+  last_error text,
+  locked_at timestamp,
+  created_at timestamp not null default now(),
+  updated_at timestamp not null default now()
+);
+
+create index if not exists jobs_status_id_index on jobs (status, id);
+create index if not exists jobs_document_id_index on jobs (document_id);
 
 create index if not exists chunks_embedding_index
   on chunks using hnsw (embedding vector_cosine_ops);

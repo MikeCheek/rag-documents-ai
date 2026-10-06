@@ -1,3 +1,4 @@
+import { searchableDocument } from "./searchable";
 import { sql, and, eq, lt, isNotNull, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { getDb, documentsTable, chunksTable } from "@/db";
@@ -130,7 +131,7 @@ export async function computeDocumentClusters(): Promise<ClusterResult> {
   const docs = await db
     .select({ id: documentsTable.id, name: documentsTable.name })
     .from(documentsTable)
-    .where(and(eq(documentsTable.status, "ready"), isNotNull(documentsTable.centroidEmbedding)));
+    .where(and(searchableDocument(), isNotNull(documentsTable.centroidEmbedding)));
 
   if (docs.length < 2) {
     return { clusters: [], singletonIds: docs.map((d) => d.id) };
@@ -151,8 +152,8 @@ export async function computeDocumentClusters(): Promise<ClusterResult> {
     .innerJoin(b, lt(a.id, b.id))
     .where(
       and(
-        eq(a.status, "ready"),
-        eq(b.status, "ready"),
+        searchableDocument(a),
+        searchableDocument(b),
         isNotNull(a.centroidEmbedding),
         isNotNull(b.centroidEmbedding)
       )

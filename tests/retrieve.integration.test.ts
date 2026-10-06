@@ -22,6 +22,8 @@ function fakeEmbedding(text: string): number[] {
 
 vi.mock("@/lib/rag/embeddings", () => ({
   EMBEDDING_DIMENSIONS: 384,
+  LEGACY_EMBEDDING_MODEL: "legacy-model",
+  currentEmbeddingModel: () => "test-model",
   generateEmbedding: async (t: string) => fakeEmbedding(t),
   generateEmbeddings: async (ts: string[]) => ts.map(fakeEmbedding),
 }));
@@ -38,13 +40,22 @@ describe.skipIf(!url)("retrieveChunks (hybrid, real Postgres)", () => {
     ({ retrieveChunks } = await import("@/lib/rag/retrieve"));
     db = schema.getDb();
 
-    const addDoc = async (name: string, status: string, chunks: string[]) => {
-      const [doc] = await db.insert(schema.documentsTable).values({ name, fileType: "txt", status }).returning();
+    const addDoc = async (
+      name: string,
+      status: string,
+      chunks: string[],
+      { language = "english", embeddingModel = "test-model" as string | null } = {}
+    ) => {
+      const [doc] = await db
+        .insert(schema.documentsTable)
+        .values({ name, fileType: "txt", status, language, embeddingModel })
+        .returning();
       docIds.push(doc.id);
       await db.insert(schema.chunksTable).values(
         chunks.map((content, chunkIndex) => ({
           documentId: doc.id,
           chunkIndex,
+          tsConfig: language,
           content,
           embedding: fakeEmbedding(content),
         }))
@@ -62,6 +73,10 @@ describe.skipIf(!url)("retrieveChunks (hybrid, real Postgres)", () => {
       "Cooking order reference XJ9000 was shipped late.",
     ]);
     await addDoc("draft.txt", "processing", ["Mitochondria draft notes that are not ready yet."]);
+    // Italian text, indexed with Italian stemming.
+    await addDoc("appunti.txt", "ready", ["Le cellule ricavano energia dai mitocondri."], { language: "italian" });
+    // Embedded with another model: must not be searched until re-embedded.
+    await addDoc("legacy.txt", "ready", ["Mitochondria notes from the old model."], { embeddingModel: null });
   });
 
   afterAll(async () => {
@@ -100,6 +115,18 @@ describe.skipIf(!url)("retrieveChunks (hybrid, real Postgres)", () => {
     expect(await resolveDocumentNames(["BIO.TXT", "misc"])).toEqual([docIds[0], docIds[1]]);
     await expect(resolveDocumentNames(["draft.txt"])).rejects.toThrow(/No ready document/);
     await expect(resolveDocumentNames(["txt"])).rejects.toThrow(/several documents/);
+  });
+
+  it("stems keywords in each document's own language", async () => {
+    // "mitocondrio" (singular) only matches "mitocondri" through Italian
+    // stemming; English stemming would leave them different words.
+    const results = await retrieveChunks("weather", { keywordQuery: "mitocondrio" });
+    expect(results.map((r) => r.content)).toContain("Le cellule ricavano energia dai mitocondri.");
+  });
+
+  it("skips documents embedded with a different model", async () => {
+    const results = await retrieveChunks("mitochondria", { keywordQuery: "mitochondria notes old model" });
+    expect(results.some((r) => r.content.includes("old model"))).toBe(false);
   });
 
   it("uses keywordQuery for the keyword half only", async () => {

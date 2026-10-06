@@ -2,6 +2,7 @@ import { and, cosineDistance, desc, eq, notInArray, sql } from "drizzle-orm";
 import { UMAP } from "umap-js";
 import { getDb, chunksTable, documentsTable } from "@/db";
 import { generateEmbedding } from "./embeddings";
+import { searchableDocument } from "./searchable";
 import type { EmbeddingSpacePoint, EmbeddingSpaceResult } from "@/types";
 
 export type { EmbeddingSpacePoint, EmbeddingSpaceResult };
@@ -28,7 +29,7 @@ export async function computeEmbeddingSpace(query: string): Promise<EmbeddingSpa
     })
     .from(chunksTable)
     .innerJoin(documentsTable, eq(chunksTable.documentId, documentsTable.id))
-    .where(eq(documentsTable.status, "ready"))
+    .where(searchableDocument())
     .orderBy(desc(similarity))
     .limit(NEIGHBOR_COUNT);
 
@@ -49,7 +50,7 @@ export async function computeEmbeddingSpace(query: string): Promise<EmbeddingSpa
           .innerJoin(documentsTable, eq(chunksTable.documentId, documentsTable.id))
           .where(
             and(
-              eq(documentsTable.status, "ready"),
+              searchableDocument(),
               notInArray(chunksTable.id, [...neighborIds])
             )
           )

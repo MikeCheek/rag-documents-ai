@@ -66,6 +66,16 @@ export default function ShelfPage() {
     loadDocuments();
   }, []);
 
+  // While anything is queued or processing in the background worker,
+  // refresh every couple of seconds to show its progress; stop once all
+  // documents have settled.
+  const hasPending = documents.some((d) => d.status === "queued" || d.status === "processing");
+  useEffect(() => {
+    if (!hasPending) return;
+    const timer = setInterval(loadDocuments, 2000);
+    return () => clearInterval(timer);
+  }, [hasPending]);
+
   // Any change to the document set invalidates a cached grouping — if
   // grouping is active right now, refetch immediately; otherwise just drop
   // the cache so the next time it's turned on fetches fresh instead of
@@ -97,6 +107,14 @@ export default function ShelfPage() {
   async function handleDeleteDocument(id: string) {
     setDocuments((prev) => prev.filter((d) => d.id !== id));
     await fetch(`/api/documents/${id}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  async function handleRetryDocument(id: string) {
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, status: "queued", stage: "queued", error: null } : d))
+    );
+    const res = await fetch(`/api/documents/${id}/retry`, { method: "POST" }).catch(() => null);
+    if (!res?.ok) loadDocuments();
   }
 
   async function handleRenameDocument(id: string, name: string) {
@@ -208,7 +226,7 @@ export default function ShelfPage() {
             </div>
 
             <div className="flex items-center gap-1">
-              {(["all", "ready", "processing", "failed"] as StatusFilter[]).map((s) => (
+              {(["all", "ready", "queued", "processing", "failed"] as StatusFilter[]).map((s) => (
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
@@ -333,6 +351,7 @@ export default function ShelfPage() {
                       doc={doc}
                       onDelete={handleDeleteDocument}
                       onRename={handleRenameDocument}
+                      onRetry={handleRetryDocument}
                     />
                   ))}
                 </div>
@@ -348,6 +367,7 @@ export default function ShelfPage() {
                   doc={doc}
                   onDelete={handleDeleteDocument}
                   onRename={handleRenameDocument}
+                  onRetry={handleRetryDocument}
                 />
               ))}
             </div>

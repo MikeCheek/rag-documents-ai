@@ -10,6 +10,7 @@ const chunk = (chunkId: number, content: string): RetrievedChunk => ({
   similarity: 0.5,
   pageStart: null,
   pageEnd: null,
+  chunkIndex: chunkId,
 });
 
 describe("bm25Rank", () => {

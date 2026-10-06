@@ -7,7 +7,7 @@ import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import { AlertTriangle, Bot, BookOpen, Clock, Copy, Check, Pencil, ChevronLeft, ChevronRight } from "lucide-react";
-import type { ChatMessage, Source } from "@/types";
+import type { ChatMessage, CitationCheck, Source } from "@/types";
 import { normalizeMathDelimiters } from "@/lib/markdown";
 import { PipelineStatus } from "./PipelineStatus";
 import { AgentSteps } from "./AgentSteps";
@@ -389,6 +389,10 @@ export function MessageBubble({
                     </div>
                   )}
 
+                  {!message.isStreaming && message.citationCheck && message.citationCheck.issues.length > 0 && (
+                    <CitationCheckNotice check={message.citationCheck} />
+                  )}
+
                   {!message.isStreaming && (
                     <div
                       className={cn(
@@ -408,6 +412,48 @@ export function MessageBubble({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const ISSUE_LABEL: Record<CitationCheck["issues"][number]["kind"], string> = {
+  missing_source: "Cites a missing source",
+  numbers_not_found: "Figure not in source",
+  weak_support: "Weakly supported",
+};
+
+/**
+ * Statements whose citations didn't hold up to an automatic check
+ * (lib/rag/citation-check.ts). Collapsed by default: a prompt to look,
+ * not a verdict.
+ */
+function CitationCheckNotice({ check }: { check: CitationCheck }) {
+  const [open, setOpen] = useState(false);
+  const n = check.issues.length;
+  return (
+    <div className="mt-2 rounded-md border border-brass-400/30 bg-brass-400/5 text-xs">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left text-brass-300 hover:text-brass-200"
+      >
+        <AlertTriangle size={12} className="shrink-0" />
+        {n} statement{n === 1 ? "" : "s"} to double-check against {n === 1 ? "its" : "their"} sources
+        {open ? <ChevronLeft size={12} className="ml-auto -rotate-90" /> : <ChevronRight size={12} className="ml-auto rotate-90" />}
+      </button>
+      {open && (
+        <ul className="px-2.5 pb-2 flex flex-col gap-2">
+          {check.issues.map((issue, i) => (
+            <li key={i} className="text-paper-300">
+              <span className="text-paper-200">&ldquo;{issue.sentence}&rdquo;</span>{" "}
+              <span className="font-mono text-paper-400">{issue.citations.map((c) => `[${c}]`).join("")}</span>
+              <span className="block text-paper-400 mt-0.5">
+                {ISSUE_LABEL[issue.kind]}: {issue.detail}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

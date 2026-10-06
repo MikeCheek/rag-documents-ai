@@ -1,3 +1,5 @@
+import { detectLanguage } from "./language";
+
 // Fully local, free query processing: stopword removal + lemmatization via
 // wink-nlp, a pure-JS NLP library with a bundled English model (no network
 // calls, no API key, ~125ms one-time load then a few ms per call). Used
@@ -46,6 +48,13 @@ export async function getLemmaTokens(text: string): Promise<string[]> {
  * for direct, keyword-bearing questions.
  */
 export async function localOptimizeQuery(query: string): Promise<string> {
+  // wink-nlp's model is English-only: lemmatizing an Italian or German
+  // question with it would mangle words. Other languages pass through
+  // as-is; keyword search stems them with the right Postgres config, and
+  // that config drops their stopwords too.
+  const language = detectLanguage(query);
+  if (language !== "english" && language !== "simple") return query;
+
   const tokens = await getLemmaTokens(query);
   const rewritten = tokens.join(" ").trim();
   // If NLP stripped everything (e.g. a query that's all stopwords/punctuation),

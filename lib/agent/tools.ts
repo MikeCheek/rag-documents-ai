@@ -8,6 +8,7 @@ import { incrementChunkUsage } from "@/lib/rag/usage";
 import { listMemories, saveMemory, deleteMemory } from "./memory";
 import type { AppSettings, BuiltinToolInfo, Source } from "@/types";
 import { formatPages } from "@/lib/utils";
+import { expandWithNeighbors } from "@/lib/rag/context";
 
 // Every built-in tool follows the OpenAI-compatible function-calling shape,
 // which OpenRouter passes straight through to whichever underlying model is
@@ -240,13 +241,16 @@ async function execSearchDocuments(
   // call) — the caller (the agent loop) rewrites it to a turn-wide global
   // index once these sources are registered, so citations stay unambiguous
   // even across multiple search_documents calls in the same turn.
+  // Neighboring passages included, as in RAG mode (lib/rag/context.ts).
+  const expanded = await expandWithNeighbors(results);
+
   return {
     result: {
       results: results.map((r, i) => ({
         index: i + 1,
         document: r.documentName,
         ...(formatPages(r.pageStart, r.pageEnd) ? { pages: formatPages(r.pageStart, r.pageEnd) } : {}),
-        excerpt: r.content.slice(0, 500),
+        excerpt: (expanded.get(r.chunkId) ?? r.content).slice(0, 1500),
         relevance: `${Math.round(Math.max(0, Math.min(1, r.relevanceScore)) * 100)}%`,
       })),
     },

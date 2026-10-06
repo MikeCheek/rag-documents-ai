@@ -12,10 +12,9 @@ const CHAT_STAGES = [
 ];
 
 const UPLOAD_STAGES = [
+  // The upload request only reads the file; OCR, chunking and embedding
+  // run in the background worker and show as progress on each document.
   { key: "reading", label: "Reading file" },
-  { key: "chunking", label: "Splitting into passages" },
-  { key: "embedding", label: "Embedding" },
-  { key: "storing", label: "Saving to the shelf" },
 ];
 
 export function PipelineStatus({

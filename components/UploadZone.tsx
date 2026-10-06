@@ -16,6 +16,7 @@ export function UploadZone({
   const [isDragging, setIsDragging] = useState(false);
   const [stage, setStage] = useState<InFlightStage>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const upload = useCallback(
     async (files: FileList | File[]) => {
@@ -23,7 +24,9 @@ export function UploadZone({
       if (list.length === 0) return;
 
       setError(null);
+      setNotice(null);
       setStage({ stage: "reading" });
+      let queued = 0;
 
       const formData = new FormData();
       list.forEach((f) => formData.append("files", f));
@@ -51,6 +54,7 @@ export function UploadZone({
               setStage({ stage: event.stage, detail: event.detail });
             } else if (event.type === "document") {
               onDocumentUpdate(event.document);
+              if (event.document.status === "queued") queued++;
             } else if (event.type === "error") {
               setError(event.message);
             }
@@ -60,6 +64,11 @@ export function UploadZone({
         setError(err?.message ?? "Upload failed.");
       } finally {
         setStage(null);
+        if (queued > 0) {
+          setNotice(
+            `${queued} file${queued === 1 ? "" : "s"} queued. Indexing continues in the background, even if you leave this page; progress shows on each document.`
+          );
+        }
       }
     },
     [onDocumentUpdate]
@@ -108,6 +117,7 @@ export function UploadZone({
         </div>
       )}
 
+      {notice && <p className="mt-2 text-xs text-paper-400 px-1">{notice}</p>}
       {error && <p className="mt-2 text-xs text-rust-400 px-1">{error}</p>}
     </div>
   );
