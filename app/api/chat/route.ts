@@ -37,6 +37,13 @@ export async function POST(req: NextRequest) {
       const query: string = (body?.query ?? "").trim();
       chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
       const mode: ChatMode = body?.mode === "agent" ? "agent" : "rag";
+      // Present only when this turn is replacing an edited message —
+      // tags both the new user message and its reply so they join the
+      // same version group as whatever was just deactivated by
+      // /api/chats/[id]/messages/start-edit, instead of starting a new,
+      // unrelated group.
+      const editGroupId: string | undefined =
+        typeof body?.editGroupId === "string" ? body.editGroupId : undefined;
 
       if (!query) {
         send({ type: "error", message: "Empty question." });
@@ -75,6 +82,7 @@ export async function POST(req: NextRequest) {
         role: "user",
         content: query,
         mode,
+        editGroupId,
       });
 
       // ---------------------------------------------------------------
@@ -95,24 +103,30 @@ export async function POST(req: NextRequest) {
             onSources: (sources) =>
               send({ type: "sources", sources, rerankMethod: settings.rerankMethod }),
           },
-          timing
+          timing,
+          req.signal
         );
 
         const durationMs = Date.now() - turnStartedAt;
         timing.record("total", durationMs);
+
+        const wasStopped = req.signal.aborted;
+        const persistedContent =
+          finalContent || (wasStopped ? "_(Stopped before an answer was generated.)_" : "");
 
         const [assistantMessage] = await db
           .insert(chatMessagesTable)
           .values({
             chatId: activeChatId,
             role: "assistant",
-            content: finalContent,
+            content: persistedContent,
             mode: "agent",
             agentSteps: steps.length ? steps : null,
             sources: sources.length ? sources : null,
             rerankMethod: sources.length ? settings.rerankMethod : null,
             apiCallCount: llmCallCount,
             durationMs,
+            editGroupId,
           })
           .returning();
         await db
@@ -137,7 +151,8 @@ export async function POST(req: NextRequest) {
         summary,
         settings,
         (stage, detail) => send({ type: "stage", stage, detail }),
-        timing
+        timing,
+        req.signal
       );
 
       send({ type: "sources", sources, rerankMethod });
@@ -176,29 +191,41 @@ export async function POST(req: NextRequest) {
 
         await timing.time("generate", async () => {
           const openrouter = getOpenRouter();
-          const completion = await openrouter.chat.completions.create({
-            model: settings.openrouterModel,
-            stream: true,
-            stream_options: { include_usage: true },
-            temperature: 0.3,
-            messages: [
-              { role: "system", content: systemPrompt },
-              ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
-              {
-                role: "user",
-                content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
-              },
-            ],
-          });
-
           let totalTokens: number | undefined;
-          for await (const chunk of completion) {
-            const delta = chunk.choices[0]?.delta?.content;
-            if (delta) {
-              answer += delta;
-              send({ type: "token", content: delta });
+
+          try {
+            const completion = await openrouter.chat.completions.create(
+              {
+                model: settings.openrouterModel,
+                stream: true,
+                stream_options: { include_usage: true },
+                temperature: 0.3,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+                  {
+                    role: "user",
+                    content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
+                  },
+                ],
+              },
+              { signal: req.signal }
+            );
+
+            for await (const chunk of completion) {
+              const delta = chunk.choices[0]?.delta?.content;
+              if (delta) {
+                answer += delta;
+                send({ type: "token", content: delta });
+              }
+              if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
             }
-            if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
+          } catch (err: any) {
+            // A genuine failure (before or during the stream) should still
+            // surface normally — only a deliberate stop (our own signal
+            // firing) is handled here, keeping whatever text streamed in
+            // before it rather than throwing the partial answer away.
+            if (!req.signal.aborted) throw err;
           }
 
           logApiCall("openrouter", "chat_completion", { tokensUsed: totalTokens });
@@ -208,17 +235,21 @@ export async function POST(req: NextRequest) {
       const durationMs = Date.now() - turnStartedAt;
       timing.record("total", durationMs);
 
+      const persistedAnswer =
+        answer || (req.signal.aborted ? "_(Stopped before an answer was generated.)_" : "");
+
       const [assistantMessage] = await db
         .insert(chatMessagesTable)
         .values({
           chatId: activeChatId,
           role: "assistant",
-          content: answer,
+          content: persistedAnswer,
           mode: "rag",
           sources: sources.length ? sources : null,
           rerankMethod,
           apiCallCount: llmCallCount,
           durationMs,
+          editGroupId,
         })
         .returning();
       await db
@@ -235,8 +266,15 @@ export async function POST(req: NextRequest) {
       // gets long. Runs after the response is already sent.
       maybeCompactChat(activeChatId);
     } catch (err: any) {
-      console.error("Chat route failed:", err);
-      send({ type: "error", message: err?.message ?? "Something went wrong." });
+      if (req.signal.aborted) {
+        // Expected: the user hit "stop" before either branch's own
+        // graceful-abort handling had a chance to run (e.g. during
+        // loadChatContext or the initial insert) — not a real failure,
+        // so no scary log line and no error event nobody's there to see.
+      } else {
+        console.error("Chat route failed:", err);
+        send({ type: "error", message: err?.message ?? "Something went wrong." });
+      }
     } finally {
       close();
     }

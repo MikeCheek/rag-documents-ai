@@ -1,26 +1,44 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, BookOpen } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, BookOpen, Square } from "lucide-react";
 import type {
   AgentStep,
   ChatMessage,
   ChatSummary,
   DocumentRecord,
+  MessageVersion,
   Source,
   StoredChatMessage,
 } from "@/types";
 import { uid } from "@/lib/utils";
+import { toSpeakableText } from "@/lib/voice/speakable-text";
 import { useMode } from "./ModeProvider";
 import { AgentModelWarning } from "./AgentModelWarning";
 import { MessageBubble } from "./MessageBubble";
 import { SourcesDrawer } from "./SourcesDrawer";
+import { VoiceInputButton } from "./VoiceInputButton";
 
 const EXAMPLE_PROMPTS = [
-  "Summarize what these documents cover",
-  "What are the key figures or dates mentioned?",
-  "Find anything about risks or limitations",
+  "Summarize what my documents cover",
+  "What are the key figures or dates mentioned in my documents?",
+  "Find anything about risks or limitations in my documents",
 ];
+
+function storedToChatMessage(m: StoredChatMessage): ChatMessage {
+  return {
+    id: String(m.id),
+    role: m.role,
+    content: m.content,
+    mode: m.mode,
+    sources: m.sources ?? undefined,
+    rerankMethod: m.rerankMethod ?? undefined,
+    agentSteps: m.agentSteps ?? undefined,
+    apiCallCount: m.apiCallCount ?? undefined,
+    durationMs: m.durationMs ?? undefined,
+    editGroupId: m.editGroupId ?? undefined,
+  };
+}
 
 export function ChatView({
   chatId,
@@ -38,23 +56,49 @@ export function ChatView({
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [input, setInput] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [activeCitation, setActiveCitation] = useState<{
     messageId: string;
     index: number;
   } | null>(null);
+  // Every past version of an edited turn stays in the database, not just
+  // the current one — these two caches back the "Edited · 2/3 ◀ ▶"
+  // navigation. Fetched lazily per edit group, not for the whole chat at
+  // once, since most messages are never edited.
+  const [versionsByGroup, setVersionsByGroup] = useState<Record<string, MessageVersion[]>>({});
+  const [versionIndexByGroup, setVersionIndexByGroup] = useState<Record<string, number>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   // Set right before we learn a new chat's id from our own send() call, so
   // the history-load effect below (which reacts to chatId changing) knows
   // to skip re-fetching and clobbering the message list that's actively
   // streaming in this same request.
   const skipNextHistoryLoadRef = useRef(false);
+  // The in-flight request's own controller, so the send button (turned
+  // into a stop button while busy) can actually cancel it — client-side
+  // (stop reading the stream) and server-side (the route threads this
+  // same signal into every OpenRouter/Cohere call it makes, so stopping
+  // really does stop paying for tokens, not just stop watching them).
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const readyDocs = documents.filter((d) => d.status === "ready");
   const activeMessage = messages.find((m) => m.id === activeCitation?.messageId);
 
+  const lastUserMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].id;
+    }
+    return null;
+  }, [messages]);
+
   // Load (or clear) the message history whenever the selected chat changes.
   useEffect(() => {
     setActiveCitation(null);
+    setEditingMessageId(null);
+    setVersionsByGroup({});
+    setVersionIndexByGroup({});
+    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+    setSpeakingMessageId(null);
 
     if (skipNextHistoryLoadRef.current) {
       skipNextHistoryLoadRef.current = false;
@@ -75,19 +119,7 @@ export function ChatView({
       .then((res) => res.json())
       .then((json: { messages?: StoredChatMessage[] }) => {
         if (cancelled || !json.messages) return;
-        setMessages(
-          json.messages.map((m) => ({
-            id: String(m.id),
-            role: m.role,
-            content: m.content,
-            mode: m.mode,
-            sources: m.sources ?? undefined,
-            rerankMethod: m.rerankMethod ?? undefined,
-            agentSteps: m.agentSteps ?? undefined,
-            apiCallCount: m.apiCallCount ?? undefined,
-            durationMs: m.durationMs ?? undefined,
-          }))
-        );
+        setMessages(json.messages.map(storedToChatMessage));
       })
       .catch(() => { })
       .finally(() => {
@@ -103,14 +135,48 @@ export function ChatView({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  async function send(text: string) {
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+    };
+  }, []);
+
+  // Any message currently showing an edit_group_id gets its version list
+  // fetched in the background — cheap (most chats have none), and means
+  // the "2/3" count is already there the first time someone looks,
+  // rather than only appearing after a click.
+  useEffect(() => {
+    if (!chatId) return;
+    const groupIds = new Set(
+      messages.filter((m) => m.editGroupId).map((m) => m.editGroupId!)
+    );
+    groupIds.forEach((editGroupId) => {
+      if (versionsByGroup[editGroupId]) return;
+      fetch(`/api/chats/${chatId}/messages/versions/${editGroupId}`)
+        .then((res) => res.json())
+        .then((json: { versions?: MessageVersion[] }) => {
+          if (!json.versions?.length) return;
+          setVersionsByGroup((prev) => ({ ...prev, [editGroupId]: json.versions! }));
+          setVersionIndexByGroup((prev) =>
+            editGroupId in prev ? prev : { ...prev, [editGroupId]: json.versions!.length - 1 }
+          );
+        })
+        .catch(() => { });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, chatId]);
+
+  async function send(text: string, editGroupId?: string) {
     const question = text.trim();
     if (!question || isBusy) return;
 
     setInput("");
     setIsBusy(true);
 
-    const userMsg: ChatMessage = { id: uid(), role: "user", content: question, mode };
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const userMsg: ChatMessage = { id: uid(), role: "user", content: question, mode, editGroupId };
     const assistantId = uid();
     const assistantMsg: ChatMessage = {
       id: assistantId,
@@ -118,6 +184,7 @@ export function ChatView({
       content: "",
       mode,
       isStreaming: true,
+      editGroupId,
     };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -144,7 +211,8 @@ export function ChatView({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: question, chatId: chatId ?? undefined, mode }),
+        body: JSON.stringify({ query: question, chatId: chatId ?? undefined, mode, editGroupId }),
+        signal: controller.signal,
       });
       if (!res.body) throw new Error("No response stream from server.");
 
@@ -188,11 +256,112 @@ export function ChatView({
         }
       }
     } catch (err: any) {
-      update({ error: err?.message ?? "Something went wrong.", isStreaming: false });
+      if (err?.name === "AbortError") {
+        // A deliberate stop, not a failure — keep whatever streamed in so
+        // far (already reflected via `update({ content })` above) rather
+        // than showing a red error for something the user asked for.
+        update({ isStreaming: false });
+      } else {
+        update({ error: err?.message ?? "Something went wrong.", isStreaming: false });
+      }
     } finally {
       setIsBusy(false);
+      abortControllerRef.current = null;
       if (resolvedChatId) onChatTouched();
     }
+  }
+
+  function stop() {
+    abortControllerRef.current?.abort();
+  }
+
+  function toggleSpeak(messageId: string, content: string) {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    // Only one utterance plays at a time — starting a new one (or
+    // stopping the current one) always cancels whatever's already
+    // speaking, since speechSynthesis itself is a single global queue,
+    // not something scoped per message.
+    window.speechSynthesis.cancel();
+
+    if (speakingMessageId === messageId) {
+      setSpeakingMessageId(null);
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(toSpeakableText(content));
+    utterance.onend = () => setSpeakingMessageId((id) => (id === messageId ? null : id));
+    utterance.onerror = () => setSpeakingMessageId((id) => (id === messageId ? null : id));
+    setSpeakingMessageId(messageId);
+    window.speechSynthesis.speak(utterance);
+  }
+
+  async function saveEdit(messageId: string, newText: string) {
+    const trimmed = newText.trim();
+    setEditingMessageId(null);
+    if (!trimmed) return;
+
+    const target = messages.find((m) => m.id === messageId);
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx !== -1) {
+      setMessages((prev) => prev.slice(0, idx));
+    }
+
+    let editGroupId = target?.editGroupId ?? undefined;
+
+    if (chatId) {
+      try {
+        const res = await fetch(`/api/chats/${chatId}/messages/start-edit`, {
+          method: "POST",
+        });
+        const json = await res.json();
+        if (res.ok && json.editGroupId) {
+          editGroupId = json.editGroupId;
+          // A new version is about to exist — drop any cached list for
+          // this group so it's refetched (and its index reset to
+          // "latest") once the new version actually lands.
+          setVersionsByGroup((prev) => {
+            const next = { ...prev };
+            delete next[editGroupId!];
+            return next;
+          });
+          setVersionIndexByGroup((prev) => {
+            const next = { ...prev };
+            delete next[editGroupId!];
+            return next;
+          });
+        }
+      } catch {
+        // Best-effort: if this fails, send() below still creates a fresh
+        // pair — just not tagged as a version of the old one. The old
+        // pair stays in the database either way (never deleted), so
+        // nothing is lost, only the version link between them.
+      }
+    }
+
+    send(trimmed, editGroupId);
+  }
+
+  function navigateVersion(editGroupId: string, direction: -1 | 1) {
+    const versions = versionsByGroup[editGroupId];
+    if (!versions) return;
+    const current = versionIndexByGroup[editGroupId] ?? versions.length - 1;
+    const target = current + direction;
+    if (target < 0 || target >= versions.length) return;
+
+    const version = versions[target];
+    setMessages((prev) => {
+      const userIdx = prev.findIndex((m) => m.editGroupId === editGroupId && m.role === "user");
+      if (userIdx === -1) return prev;
+      const next = [...prev];
+      next[userIdx] = storedToChatMessage(version.userMessage);
+      if (version.assistantMessage && next[userIdx + 1]?.role === "assistant") {
+        next[userIdx + 1] = storedToChatMessage(version.assistantMessage);
+      }
+      return next;
+    });
+
+    setVersionIndexByGroup((prev) => ({ ...prev, [editGroupId]: target }));
   }
 
   return (
@@ -205,14 +374,36 @@ export function ChatView({
           ) : messages.length === 0 ? (
             <EmptyState hasDocuments={readyDocs.length > 0} mode={mode} onPick={send} />
           ) : (
-            <div className="max-w-[720px] mx-auto px-6 py-8 flex flex-col gap-6">
-              {messages.map((m) => (
-                <MessageBubble
-                  key={m.id}
-                  message={m}
-                  onCiteClick={(index) => setActiveCitation({ messageId: m.id, index })}
-                />
-              ))}
+            <div className="w-full mx-auto px-6 py-8 flex flex-col gap-6">
+              {messages.map((m) => {
+                const versions = m.editGroupId ? versionsByGroup[m.editGroupId] : undefined;
+                const versionIndex = m.editGroupId
+                  ? versionIndexByGroup[m.editGroupId] ?? (versions ? versions.length - 1 : undefined)
+                  : undefined;
+                return (
+                  <MessageBubble
+                    key={m.id}
+                    message={m}
+                    onCiteClick={(index) => setActiveCitation({ messageId: m.id, index })}
+                    isLastUserMessage={m.role === "user" && m.id === lastUserMessageId}
+                    isEditing={editingMessageId === m.id}
+                    editDisabled={isBusy}
+                    onStartEdit={() => setEditingMessageId(m.id)}
+                    onCancelEdit={() => setEditingMessageId(null)}
+                    onSaveEdit={(text) => saveEdit(m.id, text)}
+                    versionCount={versions?.length}
+                    versionIndex={versionIndex}
+                    onPrevVersion={
+                      m.editGroupId ? () => navigateVersion(m.editGroupId!, -1) : undefined
+                    }
+                    onNextVersion={
+                      m.editGroupId ? () => navigateVersion(m.editGroupId!, 1) : undefined
+                    }
+                    isSpeaking={speakingMessageId === m.id}
+                    onToggleSpeak={() => toggleSpeak(m.id, m.content)}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
@@ -244,14 +435,32 @@ export function ChatView({
               }
               className="flex-1 resize-none bg-transparent text-[15px] text-paper-200 placeholder:text-paper-400 outline-none py-1.5 max-h-40"
             />
-            <button
-              type="submit"
-              disabled={isBusy || !input.trim()}
-              className="flex items-center justify-center h-8 w-8 rounded-lg bg-brass-400 text-ink-950 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-brass-300 transition-colors shrink-0"
-              aria-label="Send"
-            >
-              <ArrowUp size={16} strokeWidth={2.5} />
-            </button>
+            <VoiceInputButton
+              disabled={isBusy}
+              onTranscript={(text) =>
+                setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text))
+              }
+            />
+            {isBusy ? (
+              <button
+                type="button"
+                onClick={stop}
+                className="flex items-center justify-center h-8 w-8 rounded-lg bg-rust-500 text-ink-950 hover:bg-rust-400 transition-colors shrink-0"
+                aria-label="Stop"
+                title="Stop generating"
+              >
+                <Square size={13} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="flex items-center justify-center h-8 w-8 rounded-lg bg-brass-400 text-ink-950 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-brass-300 transition-colors shrink-0"
+                aria-label="Send"
+              >
+                <ArrowUp size={16} strokeWidth={2.5} />
+              </button>
+            )}
           </form>
           <p className="max-w-[720px] mx-auto text-center text-[11px] text-paper-400 mt-2 leading-relaxed">
             {mode === "agent" ? (

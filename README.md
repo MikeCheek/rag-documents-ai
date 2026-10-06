@@ -2,18 +2,21 @@
 
 A Next.js app that lets you upload documents (PDF, DOCX, TXT, MD, CSV) and
 ask questions about them in a chat interface, in either of two modes: plain
-RAG (retrieve, then answer) or an Agent mode that can call tools, document
+RAG (retrieve, then answer) or an Agent mode that can call tools — document
 search, web search, a calculator, persistent memory, and any custom API you
-add, in a loop before answering. Every answer is grounded and citable,
+add — in a loop before answering. Every answer is grounded and citable,
 every LLM call and every stage of producing it is timed and recorded, and
 you have full control over which pipeline steps cost an API call and which
 model runs them.
+
+Built around the RAG pipeline you provided (Supabase/pgvector + local
+embeddings + Cohere rerank + LLM generation), grown into a full web app.
 
 ## Features
 
 ### Navigation
 
-A top navbar links Chat, Shelf, Constellation,
+A top navbar (present on every page) links Chat, Shelf, Constellation,
 Settings, and the Ledger, with a RAG/Agent mode toggle and the usage rings
 always visible on the right. The left sidebar only shows on the Chat page
 and is reserved entirely for switching between conversations.
@@ -22,19 +25,55 @@ and is reserved entirely for switching between conversations.
 
 ![Chat interface, showing a streamed answer with inline numbered citations and a Sources panel open on the right](docs/screenshots/chat-conversation.png)
 
-- **Ask questions in plain language;** answers stream in token-by-token with
+- Ask questions in plain language; answers stream in token-by-token with
   inline citations like `[1]`, `[2]` — click one (or the source chip under
   the answer) to open the **Sources panel**, which shows the exact passage,
-  its source document, and a relevance bar.
+  its source document, and a relevance bar. Citations from the same
+  document collapse into one chip with all its numbers as small badges
+  inside, rather than repeating the document name once per passage.
+- **Stop generating, with a real cancellation, not a cosmetic one.** The
+  send button turns into a stop button the moment a request starts. The
+  same abort signal that stops the browser from waiting for more of the
+  response is threaded server-side into every OpenRouter/Cohere call the
+  turn was making (RAG's answer generation, its optional query-rewrite
+  call, and every round of Agent mode's tool-calling loop) — stopping
+  actually cancels the in-flight call and stops paying for tokens, not
+  just stops the UI from displaying them. Whatever text or tool calls
+  happened before the stop are kept, not thrown away — the message is
+  still saved, same as a normal answer, just shorter.
+- **Copy any message** with the hover button that appears over it — user
+  and assistant messages both.
+- **Dictate your prompt** with the mic button next to Send — speech-to-text
+  runs fully offline in the browser (Whisper, via a Web Worker), audio
+  never leaves your machine, and the input fills in as you talk rather
+  than only once you stop. **Listen to any answer** with the speaker
+  button that appears on hover — text-to-speech via the browser's own
+  built-in voices, also fully local. Both the Whisper model and the
+  playback voice/speed/pitch are personalizable from Settings → Voice.
+  See [Voice input & output](#voice-input--output) below for how each one
+  actually works and why they're built differently from each other.
+- **Edit and resend your last message — nothing is ever deleted.** Only
+  the most recent message you sent gets an Edit control (hover to reveal
+  it, alongside Copy). Saving an edit doesn't replace anything in the
+  database: it deactivates the old user message and its reply and inserts
+  a new pair sharing an edit group with them, then resends the edited
+  text through the normal flow. The old pair stays saved and reachable —
+  the edited message shows a small "Edited · 2/3" indicator with ◀ ▶
+  arrows to browse every previous version and its paired answer. There's
+  no messageId involved in targeting which message to edit — it always
+  acts on whichever message is currently last, which is also what makes
+  it work for a message you just sent in this session (its real database
+  id isn't known client-side until the chat is reloaded).
 - **Every answer shows how long it took and how many LLM calls that took.**
   A small badge row under each assistant message reads e.g. "Agent",
-  "3 LLM calls", "2.4s" as separate elements, deliberately just the
+  "3 LLM calls", "2.4s" as separate elements — deliberately just the
   total, not a full per-stage breakdown (that level of detail lives on the
-  Ledger's [Timing](#timing) charts instead).
+  Ledger's [Timing](#timing) charts instead). Persisted with the message,
+  so reopening a chat later shows the same numbers, not just at send time.
 - **Math, chemistry, and nuclear notation render properly** (via
   `remark-math` + `rehype-katex`/KaTeX) instead of showing raw LaTeX source
   — a model output like `\(^{4}_{3}\mathrm{Li}\)` renders as an actual
-  isotope symbol. The
+  isotope symbol, not a string full of stray backslashes and braces. The
   system prompt asks the model for `$...$`/`$$...$$` delimiters, and
   `\(...\)`/`\[...\]` are normalized to that automatically as a fallback,
   since plain CommonMark otherwise mangles raw LaTeX badly (it silently
@@ -52,7 +91,9 @@ and is reserved entirely for switching between conversations.
   ranking passages → writing the answer (RAG), or a live "Thinking" panel
   of tool calls as they happen (Agent).
 - **Multiple chats**, each with its own persisted history in Postgres —
-  switch between them from the "Chats" tab in the sidebar.
+  switch between them from the "Chats" tab in the sidebar. Nothing bleeds
+  between chats; reload the page or come back tomorrow and they're all
+  still there.
 - **Pin** chats you want to keep at the top, **rename** any chat by
   double-clicking its title, **delete** with a confirmation prompt.
 - **Compaction**: once a chat passes ~24 messages, everything except the
@@ -63,10 +104,8 @@ and is reserved entirely for switching between conversations.
 
 ### 📚 Documents — "The Shelf"
 
-![Documents tab](docs/screenshots/shelf.png)
-
-A page with documents shown as tiles in a
-responsive grid:
+Its own full page (not a sidebar tab), with documents shown as tiles in a
+responsive grid rather than a list:
 
 - Drag-and-drop or pick files (PDF, DOCX, TXT, MD, CSV) from the upload
   zone at the top. Each upload streams live progress: reading → chunking →
@@ -80,20 +119,29 @@ responsive grid:
 - **Rename** a document by double-clicking its name on the tile; **delete**
   it (and all its chunks, cascaded) with the trash icon.
 - **"Group similar"** clusters documents by how alike their content
-  actually is — there's no taxonomy to
+  actually is, not by any fixed category list — there's no taxonomy to
   classify into, only which documents read as similar to which others. Each
   document gets a centroid embedding (the elementwise mean of its chunks'
   embeddings, computed once when it finishes processing); pairwise
   similarity between every pair of centroids is computed in SQL with
   pgvector's cosine distance operator, then documents are grouped via
-  union-find using an **adaptive threshold**: pairs more than one
+  union-find using an **adaptive threshold** — pairs more than one
   standard deviation above this particular document set's own mean
-  similarity, not a fixed cosine number. Group
-  labels are generated locally too: the top significant terms (via the
+  similarity, not a fixed cosine number. A fixed threshold has an
+  all-or-nothing failure mode: centroid-averaging dilutes topic signal
+  across every chunk in a document, which compresses the whole similarity
+  range down, sometimes low enough that even genuinely related documents
+  never cross a fixed bar — so *everything* lands in "not similar to
+  others" instead of a sensible split. The adaptive version finds the
+  documents that stand out *relative to this batch*, whatever the absolute
+  numbers happen to be for a given embedding model and document mix. Group
+  labels are generated locally too — the top significant terms (via the
   same `wink-nlp` tokenizer/lemmatizer already used for local reranking)
-  across a sample of each group's content. Documents not
+  across a sample of each group's content, not an LLM call — so grouping
+  costs nothing beyond embeddings you'd already have. Documents not
   similar enough to anything else land in a "Not similar to others"
-  section rather than being forced into a group.
+  section rather than being forced
+  into a group.
 
 ### 📊 Dashboard — "The Ledger"
 
@@ -107,7 +155,7 @@ responsive grid:
   to edit those limits directly if a provider changes theirs.
 - **Passage usage**: a searchable grid of every chunk across every
   document, with a bar showing how many times it's actually been pulled
-  into an answer's context: useful for spotting documents nobody's
+  into an answer's context — useful for spotting documents nobody's
   questions ever touch.
 - **Tool usage** (Agent mode): calls, success rate, and last-used time per
   tool, built-in or custom.
@@ -115,15 +163,15 @@ responsive grid:
   daily-average trend line, and a bar breakdown of every measured stage —
   query optimization, retrieval, reranking, answer generation for RAG mode;
   each LLM round-trip and each individual tool call (`tool:search_documents`,
-  `tool:web_search`, etc.) for Agent mode, with average/min/max duration
+  `tool:web_search`, etc.) for Agent mode — with average/min/max duration
   and call count for each. Every one of those is a real, persisted
   measurement, not an estimate (see [Timing](#timing) below).
-- Small progress rings in the top navbar give an at-a-glance usage status per provider: teal = fine,
-  brass = getting close, rust = near the limit, dim = not configured.
+- Small progress rings in the top navbar (visible from every page, not
+  just here) give an at-a-glance usage status per provider: teal = fine,
+  brass = getting close, rust = near the limit, dim = not configured — the
+  ring itself fills proportionally, not just a static color.
 
 ### 🌌 Embedding space — "The Constellation"
-
-![Constellation of embeddings](docs/screenshots/constellation.png)
 
 Enter any word or phrase and see it mapped in 3D alongside the passages
 closest to it in embedding space, plus a handful of unrelated passages
@@ -136,18 +184,27 @@ right after your first upload).
 
 - **Color per document**: each document gets a maximally-distinct hue via
   golden-angle stepping (the same spacing trick used for evenly splitting a
-  circle, e.g. sunflower seed heads). Colors are
+  circle, e.g. sunflower seed heads) rather than a small fixed palette —
+  every document reads as clearly different even with a dozen-plus of them,
+  and every chunk of the same document always shares its color. Colors are
   assigned in upload order and fetched once, so a document keeps the same
   color across different searches.
 - **Results panel**: a collapsible overlay (top-right, click to expand or
   collapse) lists every plotted passage sorted by similarity, with its
   document's color dot and a percentage. Clicking a row pins that point's
-  tooltip open in the 3D view, and vice versa.
+  tooltip open in the 3D view — and vice versa, clicking a point in the
+  scene highlights it in the list.
+
+This is a genuine map, not a canned animation: click a passage in the
+Sources panel after a chat answer, and note its similarity score — the same
+relationship is what positions it here.
 
 ### ⚙️ Settings — "The Method"
 
-Organized into four tabs rather than one long scroll, General, Agent,
-Memory, and Danger zone.
+Organized into six tabs rather than one long scroll — General, Agent,
+Memory, Voice, Data, and Danger zone — since the settings surface has
+grown enough across everything below that a flat page stopped being easy
+to scan.
 
 - **General**: the model (a searchable list of every current free
   OpenRouter model, each flagged with a green "Tools" badge if it supports
@@ -161,6 +218,23 @@ Memory, and Danger zone.
   button), and custom tools — everything described under
   [Agent mode](#-agent-mode) below.
 - **Memory**: view, add, or delete anything Agent mode has remembered.
+- **Voice**: which Whisper model the mic button loads (tiny/base,
+  English-only or multilingual), and the browser's text-to-speech voice,
+  speed, and pitch (with a "Preview" button) — see
+  [Voice input & output](#voice-input--output) below for why these two
+  are stored completely differently under the hood (one server-side, one
+  in the browser's own `localStorage`).
+- **Data**: export everything — documents with their passages and
+  embeddings, every chat with its full history, agent memory, and custom
+  tools — as one JSON file, and import one back in. Import is
+  additive-only: every document and chat gets a fresh id and is added as
+  new, nothing existing is ever overwritten or merged (use the Danger Zone
+  first if a clean slate before importing is actually what's wanted).
+  Settings are included in the export for reference but never
+  auto-applied on import — your live model choice, rate limits, and web
+  search URL aren't something an import should be able to silently
+  change. See [Export & import](#export--import) below for exactly what's
+  preserved and what isn't.
 - **Danger zone**: permanently delete all chats, all documents, or all
   memory; clear API usage history (for when you've rotated to a fresh key
   and want the Ledger's counters to reflect that, rather than showing
@@ -176,9 +250,7 @@ instead).
 
 ### 🤖 Agent mode
 
-![Agent execution example](docs/screenshots/agent.png)
-
-A toggle in the top navbar (RAG / Agent) switches how the _next_ message in
+A toggle in the top navbar (RAG / Agent) switches how the *next* message in
 any chat gets answered. Nothing is locked per chat — mode is tracked **per
 message**, not per chat, so a single conversation can freely mix RAG turns
 and Agent turns; each assistant message shows a small badge saying which
@@ -190,7 +262,7 @@ one produced it.
   loop — before producing a final answer, instead of always retrieving
   automatically. Built-in tools:
   - `search_documents` — the same retrieval + rerank pipeline as RAG mode,
-    but now something the model _chooses_ to call (and can call again with
+    but now something the model *chooses* to call (and can call again with
     a refined query if the first search wasn't enough).
   - `list_documents` — what's uploaded and its status, so the model can
     check before searching.
@@ -215,7 +287,7 @@ one produced it.
     instruction ("always...", "never...", a fact about yourself worth
     keeping), it calls `remember` to actually save it, rather than just
     claiming it will. The full current memory list is included in the
-    system prompt on _every_ Agent-mode turn, so the model always has it
+    system prompt on *every* Agent-mode turn, so the model always has it
     without needing to explicitly look it up, and `forget` deletes an entry
     by id when it's asked to or something's gone stale. This is
     deliberately **global, not tied to any one chat** — it persists the way
@@ -229,7 +301,7 @@ one produced it.
     server". Requests are guarded against hitting private/internal network
     addresses (loopback, `10.x`, `172.16-31.x`, `192.168.x`, link-local/
     cloud-metadata ranges) — worth having even in a single-user self-hosted
-    app, since a tool call is initiated by the _model_, and content it
+    app, since a tool call is initiated by the *model*, and content it
     retrieves from a document could in principle try to prompt-inject it
     into calling a tool somewhere it shouldn't.
   - A **max tool calls per turn** limit (Settings, default 6) caps the
@@ -255,7 +327,7 @@ one produced it.
   appear under the message exactly like a RAG answer, because they're the
   same `sources` field and the same UI — Agent mode just populates it from
   tool calls instead of one fixed retrieval step.
-- **Cost tradeoff, stated plainly**: Agent mode uses _more_ API calls per
+- **Cost tradeoff, stated plainly**: Agent mode uses *more* API calls per
   turn than RAG mode, not fewer — each tool round trip is a real call to
   OpenRouter. This is the opposite direction from minimizing calls; it's a
   genuine tradeoff for the added capability, not a free upgrade. Every
@@ -302,7 +374,7 @@ part of producing that answer took — not just the total, the breakdown:
 All of it lands in a dedicated `stage_timings` table (not reused from
 `api_calls`, which tracks external-provider usage for rate-limit purposes,
 a different concern), referencing the chat and the specific message once
-that message exists — timing has to be collected _during_ processing,
+that message exists — timing has to be collected *during* processing,
 before there's a message row to attach it to, so it's gathered in memory
 via `lib/rag/timing.ts`'s `TimingCollector` and persisted as one batch
 right after the assistant message is inserted. A failure to persist timing
@@ -317,7 +389,7 @@ already built.
 ## Rate-limit-aware queuing
 
 Every outgoing call to OpenRouter or Cohere waits for a free slot under
-the configured per-minute cap _before_ it's made, rather than firing
+the configured per-minute cap *before* it's made, rather than firing
 immediately and finding out from a 429 that the limit was already hit.
 `lib/rag/rate-limiter.ts` is a small in-process sliding-window limiter —
 if a call would exceed the cap, it waits until the oldest call in the
@@ -351,6 +423,92 @@ still report an updating "waiting Xs..." status rather than going silent.
   instances if deployed that way — a real limitation worth knowing about,
   not a hidden one.
 
+## Export & import
+
+Settings → Data → Export downloads one JSON file with everything you've
+actually created: every document (name, status, and its full chunk list
+*with embeddings*, so importing it elsewhere doesn't need to re-run the
+embedding model or re-derive anything except each document's centroid,
+which is cheap and re-computed rather than trusted from the file), every
+chat with its complete message history (sources, agent steps, timing
+numbers, all of it, exactly as stored), agent memory, and custom tools.
+Settings are included too, but only for reference — comparing what a
+deployment was configured with at export time — never auto-applied on
+import.
+
+Import is additive, not a restore: every document and chat gets a brand
+new id and is inserted as new data, alongside whatever's already there,
+never overwriting or merging with it. There's no "replace everything"
+import mode — if a clean slate before importing is what's actually
+wanted, that's what the Danger Zone is for, used first. Custom tools are
+the one exception with real conflict potential (tool names are unique):
+an imported tool whose name already exists is skipped rather than
+failing the whole import, and the import summary says how many were
+skipped so it isn't silent.
+
+## Voice input & output
+
+Speech-to-text and text-to-speech are built on two genuinely different
+mechanisms, deliberately — not because one is "the real implementation"
+and the other a shortcut, but because the honest best option is different
+for each direction:
+
+- **Speech-to-text (the mic button)** runs Whisper via
+  `@xenova/transformers`' WASM backend, entirely in a Web Worker in the
+  browser. There's no genuinely-local alternative for this direction: the
+  browser's native `SpeechRecognition` API looks like a local built-in but
+  actually streams audio to a cloud service (Google's, in Chrome) to do
+  the recognition — the opposite of local/offline, despite the name.
+  Whisper-in-a-worker is slower to set up and heavier to load, but it's
+  the one that's actually true to "local offline model." Recording uses
+  `MediaRecorder` + `getUserMedia`; the resulting blob is decoded and
+  resampled to the 16kHz mono `Float32Array` Whisper expects via an
+  `AudioContext`, then handed to the worker. **The input fills in as you
+  talk, not only once you stop** — every ~2.5 seconds the recorder's
+  buffer is flushed and everything captured so far is re-transcribed,
+  replacing the previous partial result. Whisper isn't a streaming model,
+  so this is "updates every couple of seconds", not literal word-by-word
+  captioning — each pass re-transcribes the whole growing recording, not
+  just what's new, since there's no persistent state between calls to
+  build on incrementally. Whatever was already typed before you started
+  recording is preserved and kept in front of the dictated text, live
+  updates and all — a slower or unlucky transcription pass can never land
+  out of order and overwrite a newer one, or wipe out text you typed
+  yourself. Which Whisper variant loads (tiny/base, English-only or
+  multilingual) is a Settings → Voice choice, the same kind of setting as
+  the LLM model — it determines which model gets downloaded and run, so
+  it lives server-side, unlike the TTS voice below.
+- **Text-to-speech (the speaker button on an answer)** uses the browser's
+  built-in `SpeechSynthesis` API — genuinely local (the OS/browser's own
+  voices, no network call for playback), and *not* a bundled neural TTS
+  model. This is the one place voice input and output aren't symmetric on
+  purpose: unlike Whisper for speech-to-text, in-browser neural
+  text-to-speech in the transformers.js ecosystem is far less mature, and
+  the built-in API already does this job reliably with zero extra weight
+  — reaching for a heavier, less-proven model here in the name of
+  consistency would have been the wrong tradeoff. Markdown, LaTeX, and
+  citation markers are stripped to plain, speakable text first
+  (`lib/voice/speakable-text.ts`) — reading `**bold**` or `[1]` aloud
+  literally sounds like a bug, not a feature. Only one message can be
+  read aloud at a time — starting a new one, or switching chats, stops
+  whatever was already playing. Voice, speed, and pitch are a Settings →
+  Voice choice too, but saved in the browser's own `localStorage`, not as
+  a server-side setting — available system voices are inherently
+  per-device, so a voice name saved server-side might not even exist on a
+  different browser.
+
+Both directions run entirely client-side: no audio is ever sent to this
+app's own server, and neither one touches OpenRouter, Cohere, or any
+other paid API — this is a "no cost" feature by construction, not a
+setting.
+
+Whisper's WASM runtime and model weights are fetched from a CDN /
+Hugging Face the first time the mic is actually used, and cached by the
+browser after that — the exact same "downloads once, works offline from
+then on" pattern already used for this app's server-side embedding
+model, just running in the browser instead of Node. First use needs a
+real network connection; every use after that doesn't.
+
 ## How it works
 
 ```
@@ -378,14 +536,14 @@ This table describes **RAG mode**. Every turn potentially touches up to
 four different services, each with a free local alternative except the
 final answer itself:
 
-| Step                                 | Options (set in Settings)                    | Cost                                                                                                       |
-| ------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Embeddings (documents & every query) | always local                                 | **Free** — runs locally via Xenova, in this Node process                                                   |
-| Retrieval (vector search)            | always your own Postgres                     | **Free** — your Supabase database                                                                          |
-| Query optimization                   | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call                                                              |
-| Reranking                            | Cohere / **Local BM25** / Off                | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
-| Answer generation                    | always OpenRouter                            | 1 API call — this is the one you keep                                                                      |
-| Compaction                           | automatic, occasional                        | 1 OpenRouter call, only once every ~24 messages in a chat                                                  |
+| Step | Options (set in Settings) | Cost |
+|---|---|---|
+| Embeddings (documents & every query) | always local | **Free** — runs locally via Xenova, in this Node process |
+| Retrieval (vector search) | always your own Postgres | **Free** — your Supabase database |
+| Query optimization | **Off** (raw question) / **Local NLP** / LLM | Off & Local: **free**. LLM: 1 OpenRouter call |
+| Reranking | Cohere / **Local BM25** / Off | Local & Off: **free**. Cohere: 1 API call (auto-falls back to free local BM25 if unconfigured or it fails) |
+| Answer generation | always OpenRouter | 1 API call — this is the one you keep |
+| Compaction | automatic, occasional | 1 OpenRouter call, only once every ~24 messages in a chat |
 
 With **Query optimization: Local** and **Reranking: Local BM25** (the
 defaults), a normal RAG-mode chat turn makes **exactly one API call** — the
@@ -453,21 +611,51 @@ Fill in:
 
 ### 4. Set up the database
 
-In the Supabase SQL editor, run these eleven files in order:
+In the Supabase SQL editor, run these six files in order:
 
 ```
-db/migrations/0000_init.sql                     -- pgvector, documents, chunks
-db/migrations/0001_dashboard.sql                -- usage_count column, api_calls log
-db/migrations/0002_chats_and_settings.sql       -- chats, chat_messages, settings
-db/migrations/0003_rls.sql                      -- locks tables out of Supabase's REST API
-db/migrations/0004_local_nlp_settings.sql       -- query optimization / rerank mode settings
-db/migrations/0005_agent_mode.sql               -- agent mode, custom tools, tool call log
-db/migrations/0006_openrouter_model_setting.sql -- moves the model into a live setting
-db/migrations/0007_agent_memory.sql             -- persistent, cross-chat agent memory
-db/migrations/0008_web_search_and_call_counts.sql -- web search setting, per-message LLM call counts
-db/migrations/0009_timings.sql                  -- per-stage timing log + per-message duration
-db/migrations/0010_clustering_and_danger_zone.sql -- document centroid embeddings for similarity grouping
+db/migrations/0000_extensions.sql          -- pgvector
+db/migrations/0001_documents_and_chunks.sql -- documents (incl. centroid embeddings), chunks, api_calls
+db/migrations/0002_chats_and_messages.sql  -- chats, chat_messages, stage_timings
+db/migrations/0003_agent.sql               -- agent_tools, tool_call_log, agent_memories
+db/migrations/0004_settings.sql            -- the settings singleton row
+db/migrations/0005_security.sql            -- locks every table out of Supabase's REST API
 ```
+
+These are organized by what each table *is* (documents, chats, agent
+data, settings, security) rather than by the order features were added in
+— the six files above are a consolidation of what was previously eleven
+incremental `alter table` migrations, replaced outright rather than kept
+alongside them. **If you already have a working database from an earlier
+version of this project, you don't need to run these** — every table and
+column they create already exists in your database from the migrations
+you ran previously; this consolidated set exists for anyone setting up
+fresh, not as a new change to apply. Two exceptions, both for existing
+databases specifically (harmless no-ops on a fresh one, since the six
+files above already include what they add):
+
+- If your database predates `documents.centroid_embedding` (used by
+  "Group similar" on the Shelf), run
+  `db/migrations/backfill_centroid_embeddings.sql` once — a standalone
+  utility, not part of this numbered sequence, since it fills in data for
+  documents that already exist rather than changing the schema.
+- If your database predates editing a message (the "Edited · 2/3"
+  version history on the last user message), run
+  `db/migrations/0006_message_versions.sql` once — this one *is* a schema
+  change (two new columns on `chat_messages`), so unlike the backfill
+  above it's numbered and sequenced after the baseline, not a standalone
+  utility.
+- If your database predates personalizable speech-to-text (Settings →
+  Voice's Whisper model picker), run
+  `db/migrations/0007_voice_model_setting.sql` once — a new column on
+  `settings`, same reasoning as 0006 above.
+
+Every table here is created with `create table if not exists` and every
+column with the type/default it has today, so there's nothing left to
+bolt on afterward — a fresh install gets the finished schema in six
+focused files instead of piecing it together from the sequence of
+`alter table` statements that originally built it up one feature at a
+time.
 
 **Use the SQL editor, not `npm run db:push`, for this project.**
 `drizzle-kit push` has two separate known incompatibilities with Supabase
@@ -507,7 +695,9 @@ app/
   api/upload/route.ts          # Streams upload/embedding progress
   api/chat/route.ts            # Streams pipeline stages + answer tokens; branches RAG/Agent; times + persists both
   api/chats/route.ts           # List chats
-  api/chats/[id]/route.ts      # Load history / rename / pin / delete a chat
+  api/chats/[id]/route.ts      # Load active-version history / rename / pin / delete a chat
+  api/chats/[id]/messages/start-edit/route.ts # Deactivates the last user message + reply, starting/reusing an edit group
+  api/chats/[id]/messages/versions/[editGroupId]/route.ts # Every version of an edited turn, oldest first
   api/documents/route.ts       # List documents
   api/documents/[id]/route.ts  # Rename / delete a document
   api/dashboard/route.ts       # Aggregates stats (incl. timing) for the dashboard
@@ -523,6 +713,8 @@ app/
   api/web-search-check/route.ts # Live-tests a SearXNG URL from Settings
   api/document-clusters/route.ts # Groups documents by centroid-embedding similarity
   api/danger-zone/route.ts     # Destructive resets: chats, documents, usage history, limits, memory
+  api/export/route.ts          # Downloads the full data export as JSON
+  api/import/route.ts          # Imports a previously-exported JSON file, additive-only
 lib/rag/
   embeddings.ts                # Local Xenova embeddings
   extract-text.ts              # PDF / DOCX / TXT extraction
@@ -540,6 +732,7 @@ lib/rag/
   embedding-space.ts           # Nearest-neighbor search + UMAP projection to 3D
   timing.ts                    # TimingCollector, persistence, and dashboard aggregation
   clustering.ts                # Document centroids, similarity graph, local cluster labeling
+  export-import.ts             # Full data export/import — additive-only, settings reference-only
   rate-limiter.ts              # In-process sliding-window limiter, awaited before every OpenRouter/Cohere call
   clients.ts                   # getOpenRouter() (OpenAI SDK), getAgentModel() (AI SDK), getCohere()
 lib/agent/
@@ -554,14 +747,20 @@ lib/
   constellation-colors.ts      # Golden-angle per-document color assignment
   markdown.ts                  # Normalizes \( \) / \[ \] LaTeX delimiters to $ / $$
   utils.ts                     # cn, formatBytes, relativeTime, formatDuration, formatClockTime, uid
+lib/voice/
+  asr-worker.ts                 # Web Worker: loads the configured Whisper model, does interim + final transcription
+  audio-utils.ts                 # Decodes a recorded Blob to the 16kHz mono Float32Array Whisper expects
+  whisper-models.ts              # Whisper model id constants — no server-only imports, safe for client components
+  speakable-text.ts              # Strips markdown/LaTeX/citations to plain text for text-to-speech
+  tts-preferences.ts             # localStorage-backed voice/speed/pitch preference for the speaker button
 db/
-  schema.ts                    # Drizzle schema (documents incl. centroid_embedding, chunks, chats, chat_messages, agent_tools, agent_memories, tool_call_log, stage_timings, api_calls, settings)
+  schema.ts                    # Drizzle schema (documents incl. centroid_embedding, chunks, chats, chat_messages incl. edit versioning, agent_tools, agent_memories, tool_call_log, stage_timings, api_calls, settings incl. whisper_model)
   migrations/                  # Raw SQL for the Supabase SQL editor
 components/                    # UI (top navbar, sidebar, chat list, chat, sources panel, etc.)
 components/dashboard/          # Stat cards, editable usage meters, passage/tool usage grids, timing charts
 components/constellation/      # The three.js/@react-three/fiber 3D scene + collapsible results list
 components/shelf/              # Document tile grid (flat or grouped-by-similarity)
-components/settings/           # Model picker, web search settings, agent tools manager, memory manager, danger zone
+components/settings/           # Model picker, web search settings, agent tools manager, memory manager, voice (STT/TTS personalization), data (export/import), danger zone
 docs/screenshots/              # Screenshots used in this README
 ```
 
@@ -570,6 +769,10 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
 `AgentSteps.tsx` (the live + persisted "Thinking" panel on a message),
 `AgentModelWarning.tsx` (the dismissible tool-support warning banner).
 `UsageCircles.tsx` is the navbar's per-provider progress-ring indicator.
+`VoiceInputButton.tsx` (the mic button, owns recording + the ASR worker)
+and `SpeakButton.tsx` (the speaker button on an assistant message) are
+the two Chat-specific voice pieces — see
+[Voice input & output](#voice-input--output).
 
 ## Notes
 
@@ -581,6 +784,65 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
   access to openrouter.ai available while building this, so a real
   end-to-end tool-calling round trip has never actually run. Test one real
   Agent-mode conversation after pulling this before trusting it.
+- **Stop-button cancellation is built on confirmed SDK support (checked
+  the actual type definitions for `abortSignal`/`signal` in the OpenAI,
+  Cohere, and Vercel AI SDKs before wiring it in — not assumed), but like
+  the point above, has never been exercised against a live model either.**
+  Test it once: start a question, hit stop mid-stream, and confirm both
+  that the UI stops cleanly and that OpenRouter's own dashboard doesn't
+  show the call still running after you stopped it.
+- **Export/import has been verified by type-checking and code review, not
+  by an actual round trip.** There's no live database in the environment
+  this was built in, so "export real data, import it into an empty
+  database, confirm it matches" has never literally happened. The parts
+  most worth a first real test: a document with many chunks (embeddings
+  are the bulk of the file size) and a chat that used Agent mode (steps,
+  sources, and timing all have to survive the round trip intact).
+- **Voice input has been verified further than most of the caveats on
+  this list, but still not fully end-to-end.** There's no browser or
+  microphone available in the environment this was built in, so actually
+  recording audio and getting a real transcription back has never
+  happened. What *has* been checked, concretely, rather than assumed: the
+  production build was inspected chunk-by-chunk — twice, once at first
+  and again after the model became configurable — to confirm the Web
+  Worker and `@xenova/transformers` bundle correctly and split into their
+  own lazy-loaded chunk (roughly 700KB combined) rather than bloating
+  every page load, and that the worker chunk's contents genuinely contain
+  the transcription logic and the now-dynamic `modelId` handling rather
+  than a broken or stale bundle. The live-transcription request logic
+  (interim passes racing a final one, a slow stale result never
+  overwriting a newer one) was verified with an actual simulation
+  standing in for the worker, not just read over — logged output
+  confirmed a final request always supersedes a queued interim one and no
+  two requests are ever in flight at once. What's still unverified: the
+  actual `getUserMedia` → `MediaRecorder` → `AudioContext` decode →
+  Whisper pipeline, end to end, with real audio. Test it once — say
+  something, watch the input fill in as you talk, confirm it stops
+  cleanly — before relying on it. Text-to-speech (the speaker button) is
+  lower-risk: it's the browser's own built-in `SpeechSynthesis` API doing
+  the real work, not custom audio pipeline code, so there's less that can
+  go wrong in a way build-checking wouldn't already have caught.
+- **Editing only ever targets the *last* user message, deliberately, and
+  by position rather than by id.** There's no way to edit an earlier
+  message, and `/api/chats/[id]/messages/start-edit` doesn't take a
+  messageId at all — it always acts on the most recent active user
+  message in a chat and whatever came after it. This isn't a missing
+  feature so much as a consequence of how messages exist client-side: a
+  message you just sent this session only has a temporary,
+  client-generated id until the chat is reloaded, so an id-based "edit
+  this specific message" endpoint wouldn't have worked for the most
+  common case (editing something you just typed).
+- **Editing deactivates, it never deletes.** The old user+assistant pair
+  gets `is_active_version: false` and an `edit_group_id` shared with the
+  new pair that replaces it in the normal view — nothing is ever removed
+  from `chat_messages`. `GET /api/chats/[id]` only returns active
+  versions (the normal chat view); every past version is still reachable
+  through `GET /api/chats/[id]/messages/versions/[editGroupId]`, which the
+  "Edited · 2/3" navigation on an edited message calls lazily, cached per
+  edit group so browsing versions back and forth doesn't refetch. Viewing
+  an older version is purely a local swap of that one pair's displayed
+  content — it doesn't change which version loads by default next time,
+  and doesn't touch the database at all; only saving a *new* edit does.
 - API routes run on the Node.js runtime (not Edge) since local embeddings,
   PDF/DOCX parsing, and the Postgres client all need it.
 - Supabase free projects pause after ~1 week of inactivity — resume from
@@ -615,7 +877,7 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
 - The SSRF guard on custom tools (`lib/agent/ssrf-guard.ts`) blocks
   loopback, private (`10.x`, `172.16-31.x`, `192.168.x`), and link-local/
   cloud-metadata address ranges, resolving hostnames via DNS first so a
-  domain that merely _points at_ a private IP is caught too — but it can't
+  domain that merely *points at* a private IP is caught too — but it can't
   stop a custom tool from calling a public API that itself does something
   undesirable with the data it's sent. Treat custom tools as extending
   trust to whatever they call. (Web search's SearXNG URL is exempt from
@@ -672,15 +934,27 @@ Agent-mode-specific frontend pieces (not tied to one folder above):
 - **Security**: this app talks to Postgres directly via `DATABASE_URL`, not
   through Supabase's client-side API, so Supabase's Security Advisor will
   flag every table as "RLS Disabled in Public" until you run
-  `0003_rls.sql` (and the later migrations that create new tables, which
-  each enable RLS themselves). Those migrations enable RLS with no
-  policies on each table — it blocks all access via Supabase's
-  auto-generated REST API (the thing the anon/authenticated keys talk to)
-  without affecting the app's direct connection, since the default
-  `postgres` role bypasses RLS. You may also see an "Extension in Public:
-  vector" advisory — that's `pgvector` living in the `public` schema, which
-  is how the migrations install it; moving it to a dedicated schema is
-  possible but not done here, since it requires re-pointing the `vector`
-  type in the schema and isn't a functional problem, just a lint
-  preference.
-
+  `0005_security.sql`, which enables RLS with no policies on every table
+  — it blocks all access via Supabase's auto-generated REST API (the thing
+  the anon/authenticated keys talk to) without affecting the app's direct
+  connection, since the default `postgres` role bypasses RLS. You may also
+  see an "Extension in Public: vector" advisory — that's `pgvector` living
+  in the `public` schema, which is how the migrations install it; moving
+  it to a dedicated schema is possible but not done here, since it
+  requires re-pointing the `vector` type in the schema and isn't a
+  functional problem, just a lint preference.
+- **The message list in Chat is full-width; the input bar and the
+  disclaimer text below it are still capped at `max-w-[720px]`.** This
+  was a deliberate, narrowly-scoped edit (messages only), not a
+  full-width redesign of the whole chat screen — if the input bar should
+  widen to match, that's a one-line change (`max-w-[720px]` → `w-full` on
+  the same two spots in `ChatView.tsx`), just not one made unprompted.
+- **Auto-scroll while an answer streams in is throttled to once per
+  animation frame and uses an instant jump, not an animated one** — the
+  original version called a smooth-scroll on every single token, which
+  fights itself (each call restarts the CSS animation before the last one
+  finishes) and is what actually read as laggy. A smooth scroll is still
+  used, but only when an actual new message appears, not for the
+  continuous in-place content updates while one streams in. It also
+  stops forcing the scroll at all if you've scrolled up to read earlier
+  messages — a streaming answer shouldn't yank you back down.

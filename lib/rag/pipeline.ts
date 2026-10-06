@@ -25,7 +25,8 @@ export async function runRetrievalPipeline(
   summary: string | null,
   settings: AppSettings,
   onStage: (stage: PipelineStage, detail?: string) => void,
-  timing: TimingCollector
+  timing: TimingCollector,
+  abortSignal?: AbortSignal
 ): Promise<PipelineResult> {
   onStage("optimizing", modeLabel(settings.queryOptimization));
   let optimizedQuery = query;
@@ -41,7 +42,7 @@ export async function runRetrievalPipeline(
     if (actuallyWaitedMs > 50) timing.record("rate_limit_wait", actuallyWaitedMs);
 
     optimizedQuery = await timing.time("optimize_query", () =>
-      getOptimizedQuery(query, history, summary, settings.openrouterModel)
+      getOptimizedQuery(query, history, summary, settings.openrouterModel, abortSignal)
     );
   } else if (settings.queryOptimization === "local") {
     optimizedQuery = await timing.time("optimize_query_local", () => localOptimizeQuery(query));

@@ -92,10 +92,18 @@ export const chatMessagesTable = pgTable(
     agentSteps: jsonb("agent_steps"), // AgentStep[] | null — agent mode only
     apiCallCount: integer("api_call_count"), // # of LLM (OpenRouter) calls made to produce this message
     durationMs: integer("duration_ms"), // total time taken to produce this message
+    // Editing the last user message never deletes anything — it deactivates
+    // the old user+assistant pair (isActiveVersion: false) and inserts a
+    // new one sharing the same editGroupId, so every past version stays in
+    // the database and is reachable via the version-navigation UI. A
+    // message that's never been part of an edit has editGroupId: null.
+    editGroupId: uuid("edit_group_id"),
+    isActiveVersion: boolean("is_active_version").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
     chatIdIndex: index("chat_messages_chat_id_index").on(table.chatId),
+    editGroupIdIndex: index("chat_messages_edit_group_id_index").on(table.editGroupId),
   })
 );
 
@@ -175,6 +183,14 @@ export const settingsTable = pgTable("settings", {
   agentMaxSteps: integer("agent_max_steps").notNull().default(6),
   openrouterModel: text("openrouter_model").notNull().default("openrouter/free"),
   searxngBaseUrl: text("searxng_base_url"), // null = web search not configured/offered
+  // Which Whisper variant the mic button loads for local speech-to-text —
+  // a server-side setting like openrouterModel, not a browser preference,
+  // since it determines which model gets downloaded/run, the same
+  // reasoning as the LLM model choice. The TTS voice/rate the speaker
+  // button uses is the opposite: stored client-side (localStorage), since
+  // available system voices are inherently per-device, not something a
+  // server-side setting could meaningfully apply across browsers.
+  whisperModel: text("whisper_model").notNull().default("Xenova/whisper-tiny.en"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

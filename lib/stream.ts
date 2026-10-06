@@ -24,11 +24,21 @@ export function createEventStream() {
   });
 
   function send(event: StreamEvent) {
-    controllerRef?.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+    try {
+      controllerRef?.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+    } catch {
+      // The client disconnected (e.g. hit "stop") — the controller is
+      // already closed/errored at this point, so there's nothing to send
+      // to. Not a real failure, just nobody listening anymore.
+    }
   }
 
   function close() {
-    controllerRef?.close();
+    try {
+      controllerRef?.close();
+    } catch {
+      // Already closed (e.g. by the same disconnect above) — fine to ignore.
+    }
   }
 
   return { stream, send, close };
