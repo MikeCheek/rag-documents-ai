@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { desc, eq, sql } from "drizzle-orm";
 import { getDb, documentsTable, chunksTable } from "@/db";
 import { getUsageSnapshot } from "@/lib/rag/usage";
+import { currentEmbeddingModel } from "@/lib/rag/embeddings";
 import { getToolUsage } from "@/lib/agent/tool-usage";
 import { getTimingStats } from "@/lib/rag/timing";
 
@@ -14,12 +15,12 @@ export async function GET() {
 
     const [docStats] = await db
       .select({
-        total: sql<number>`count(*)`,
-        ready: sql<number>`count(*) filter (where ${documentsTable.status} = 'ready')`,
-        processing: sql<number>`count(*) filter (where ${documentsTable.status} = 'processing')`,
-        failed: sql<number>`count(*) filter (where ${documentsTable.status} = 'failed')`,
-        totalChunks: sql<number>`coalesce(sum(${documentsTable.chunkCount}), 0)`,
-        totalChars: sql<number>`coalesce(sum(${documentsTable.charCount}), 0)`,
+        total: sql<number>`count(*)`.mapWith(Number),
+        ready: sql<number>`count(*) filter (where ${documentsTable.status} = 'ready')`.mapWith(Number),
+        processing: sql<number>`count(*) filter (where ${documentsTable.status} = 'processing')`.mapWith(Number),
+        failed: sql<number>`count(*) filter (where ${documentsTable.status} = 'failed')`.mapWith(Number),
+        totalChunks: sql<number>`coalesce(sum(${documentsTable.chunkCount}), 0)`.mapWith(Number),
+        totalChars: sql<number>`coalesce(sum(${documentsTable.charCount}), 0)`.mapWith(Number),
       })
       .from(documentsTable);
 
@@ -51,6 +52,7 @@ export async function GET() {
         totalChars: 0,
       },
       usage,
+      embeddingModel: currentEmbeddingModel(),
       limits,
       configured,
       chunks,

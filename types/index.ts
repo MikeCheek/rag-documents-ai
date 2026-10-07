@@ -145,6 +145,7 @@ export type TimingDailyPoint = {
 };
 
 export type DashboardData = UsageSnapshot & {
+  embeddingModel?: string;
   documents: {
     total: number;
     ready: number;

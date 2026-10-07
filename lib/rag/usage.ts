@@ -69,8 +69,8 @@ export async function getUsageSnapshot() {
     .select({
       provider: apiCallsTable.provider,
       purpose: apiCallsTable.purpose,
-      calls: sql<number>`coalesce(sum(${apiCallsTable.count}), 0)`,
-      tokens: sql<number>`coalesce(sum(${apiCallsTable.tokensUsed}), 0)`,
+      calls: sql<number>`coalesce(sum(${apiCallsTable.count}), 0)`.mapWith(Number),
+      tokens: sql<number>`coalesce(sum(${apiCallsTable.tokensUsed}), 0)`.mapWith(Number),
     })
     .from(apiCallsTable)
     .groupBy(apiCallsTable.provider, apiCallsTable.purpose);

@@ -217,12 +217,12 @@ export function CohereUsageCard({
   );
 }
 
-export function LocalUsageCard({ usage }: { usage: ProviderUsage }) {
+export function LocalUsageCard({ usage, model }: { usage: ProviderUsage; model?: string }) {
   return (
     <div className="rounded-lg border border-ink-600 bg-ink-800 p-5 flex flex-col gap-4">
       <div>
         <p className="text-sm text-paper-200 font-medium">Local embeddings</p>
-        <p className="text-xs text-paper-400 mt-0.5">Xenova / all-MiniLM-L6-v2</p>
+        {model && <p className="text-xs text-paper-400 mt-0.5">{model.replace("/", " / ")}</p>}
       </div>
 
       <div className="grid grid-cols-3 gap-3 text-center">

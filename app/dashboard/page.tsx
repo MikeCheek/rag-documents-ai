@@ -135,7 +135,7 @@ export default function DashboardPage() {
                   limits={data.limits}
                   onSaveLimits={saveLimits}
                 />
-                <LocalUsageCard usage={data.usage.local} />
+                <LocalUsageCard usage={data.usage.local} model={data.embeddingModel} />
               </div>
             </section>
 
