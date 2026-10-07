@@ -15,7 +15,7 @@ Embeddings, OCR, keyword search and reranking all run locally, so the only
 paid call is the LLM (via [OpenRouter](https://openrouter.ai), with free
 models by default).
 
-![Agent mode answering a question: the tool calls it made, the answer with numbered citations, and the Sources panel](docs/screenshots/agent.png)
+![An answer with a timeline diagram drawn from the documents, cited sources under it, and the Sources panel open](docs/screenshots/chat-rich.png)
 
 ## Contents
 
@@ -49,6 +49,8 @@ models by default).
   while the full history stays on screen.
 - Each answer shows its mode, number of LLM calls and time taken.
 
+![A question limited to 3 documents with "Search in", answered by Agent mode](docs/screenshots/search-in.png)
+
 ### Agent mode
 
 Switch between **RAG** and **Agent** in the top bar. The mode is chosen per
@@ -67,6 +69,8 @@ the answer. A per-turn limit on tool calls (default 6) keeps costs bounded.
 Pick a model that supports tool calling: Settings marks them, and a banner
 warns you when the current model doesn't.
 
+![Agent mode: the tool calls it made, the answer with numbered citations, and the Sources panel](docs/screenshots/agent.png)
+
 ### Integrations
 
 Under **Method → Integrations**:
@@ -81,9 +85,11 @@ Under **Method → Integrations**:
 - **MCP servers** over Streamable HTTP or SSE. You can switch individual
   tools off.
 
+![Method → Integrations with a custom weather tool and an MCP server](docs/screenshots/integrations.png)
+
 ### The Shelf: your documents
 
-![The Shelf: uploaded documents as tiles with status, passage count and filters](docs/screenshots/shelf.png)
+![The Shelf: documents as tiles, one still indexing in the background with its progress bar](docs/screenshots/shelf-processing.png)
 
 - Drag and drop files. **Indexing happens in the background** with a progress
   bar on each document, and keeps going if you close the tab. Failed
@@ -106,7 +112,7 @@ color, and clicking a point shows its text.
 
 ### The Ledger: usage and timing
 
-![The Ledger: database stats and API usage against each provider's limits](docs/screenshots/dashboard-ledger.png)
+![The Ledger: database stats, API usage against each provider's limits, and how often each passage is used](docs/screenshots/ledger.png)
 
 - Documents, passages and answers stored.
 - API calls and tokens per provider, against limits you can edit. Rings in
