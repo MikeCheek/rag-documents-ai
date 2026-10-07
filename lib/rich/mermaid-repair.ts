@@ -1,7 +1,8 @@
 // Cleanup and repair for Mermaid diagrams written by the model.
 //
 // prepareMermaid() runs on every diagram: it drops styling statements
-// (style / classDef / class / linkStyle and :::class suffixes). Models
+// (style / classDef / class / linkStyle and :::class suffixes), and in
+// timelines keeps colons in text from being read as separators. Models
 // tend to hard-code light pastel fills that are unreadable in this app's
 // dark theme, where node text is light; without them every diagram uses
 // the app's own theme.
@@ -15,12 +16,41 @@
 const STYLE_LINE = /^\s*(style|classDef|class|linkStyle)\s.*$/;
 
 export function prepareMermaid(source: string): string {
-  return source
+  const prepared = source
     .split("\n")
     .filter((line) => !STYLE_LINE.test(line))
     .map((line) => line.replace(/:::[A-Za-z0-9_-]+/g, ""))
     .join("\n")
     .trim();
+  return /^timeline\b/.test(prepared) ? prepareTimeline(prepared) : prepared;
+}
+
+/** Looks like a colon, but isn't Mermaid syntax (U+A789 MODIFIER LETTER COLON). */
+const TEXT_COLON = "\uA789";
+
+/**
+ * In a timeline, ":" separates a period from its events, so a colon in
+ * the text itself breaks it. In a section title ("section 2016–2018:
+ * Foundations") it's a parse error; in an event ("2017 : ScanNet: Richly
+ * annotated...") it silently splits one event into two. Models write
+ * both all the time. Colons in text become a look-alike character; the
+ * separators stay. A separator is the first colon on a period line, and
+ * any colon with whitespace before it.
+ */
+function prepareTimeline(source: string): string {
+  return source
+    .split("\n")
+    .map((line, n) => {
+      const trimmed = line.trim();
+      if (n === 0 || !trimmed || trimmed.startsWith("%%") || /^(title|accTitle|accDescr)\b/.test(trimmed)) return line;
+      const section = /^(\s*section\s)(.*)$/.exec(line);
+      if (section) return section[1] + section[2].replace(/:/g, TEXT_COLON);
+      const first = line.indexOf(":");
+      if (first === -1) return line;
+      const rest = line.slice(first + 1).replace(/(\S):/g, `$1${TEXT_COLON}`);
+      return line.slice(0, first + 1) + rest;
+    })
+    .join("\n");
 }
 
 /** Node shapes: opening token -> closing token. Longest openers first. */

@@ -56,6 +56,33 @@ describe("repairMermaid", () => {
 });
 
 describe("prepareMermaid", () => {
+  it("fixes a real model-written timeline with colons in its text", async () => {
+    // From a real answer: "section 2016–2018: Foundations" failed with
+    // "Cannot read properties of undefined (reading 'events')".
+    const original = readFileSync(path.join(__dirname, "fixtures/mermaid-timeline-colons.mmd"), "utf8");
+    expect(await parses(original)).not.toBe(true);
+
+    const fixed = prepareMermaid(original);
+    expect(await parses(fixed)).toBe(true);
+    expect(fixed).toContain("section 2016–2018\uA789 Foundations");
+    // A colon inside an event stays one event, not two.
+    expect(fixed).toContain("2017 : ScanNet\uA789 Richly-Annotated 3D Reconstructions");
+    // Separators are untouched, continuation lines included.
+    expect(fixed).toContain("2018 : NeRF (Neural Radiance Fields)\n              : Local Light Field Fusion");
+    expect(fixed).toContain("title 3D AI Discoveries Timeline (2016–2026)");
+  });
+
+  it("treats a period's first colon as the separator, even without spaces", async () => {
+    const fixed = prepareMermaid("timeline\n  2020: Launch: v1 : Beta");
+    expect(fixed).toBe("timeline\n  2020: Launch\uA789 v1 : Beta");
+    expect(await parses(fixed)).toBe(true);
+  });
+
+  it("leaves colons alone outside timelines", () => {
+    const seq = "sequenceDiagram\n  A->>B: hello: world";
+    expect(prepareMermaid(seq)).toBe(seq);
+  });
+
   it("drops styling so the app theme applies", () => {
     const out = prepareMermaid("flowchart TD\n  a:::hot --> b\n  classDef hot fill:#f00\n  style b fill:#fff\n  linkStyle 0 stroke:#000");
     expect(out).toBe("flowchart TD\n  a --> b");
