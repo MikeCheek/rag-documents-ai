@@ -59,6 +59,8 @@ export type AgentLoopResult = {
   sources: Source[];
   rerankMethod: RerankResultMethod | null;
   llmCallCount: number;
+  /** Tokens sent in the turn's largest request, as reported by OpenRouter. */
+  promptTokens: number | null;
 };
 
 type ToolOutcome = {
@@ -329,7 +331,7 @@ async function runAgentTurn(
     model,
     system: systemPrompt,
     messages: [
-      ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+      ...history.map((m) => ({ role: m.role, content: m.content })),
       { role: "user" as const, content: query },
     ] as any,
     tools: toolMap,
@@ -423,6 +425,7 @@ async function runAgentTurn(
       sources: sourceRegistry.getAll(),
       rerankMethod,
       llmCallCount: completedRounds,
+      promptTokens: null,
     };
   }
 
@@ -449,11 +452,16 @@ async function runAgentTurn(
 
   // The turn's "total" timing row is recorded by the caller, which times
   // the whole request — recording it here too would count agent turns twice.
+  // The largest request of the turn: each round re-sends everything so
+  // far plus the tool results, so it's usually the last one.
+  const promptTokens = Math.max(0, ...resultSteps.map((step) => step.usage?.inputTokens ?? 0)) || null;
+
   return {
     finalContent,
     steps,
     sources: sourceRegistry.getAll(),
     rerankMethod,
     llmCallCount: resultSteps.length,
+    promptTokens,
   };
 }

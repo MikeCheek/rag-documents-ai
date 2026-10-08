@@ -316,3 +316,18 @@ export type ClusterResult = {
   clusters: DocumentCluster[];
   singletonIds: string[];
 };
+
+/** How full a chat's context is (lib/rag/chats.ts getContextUsage). */
+export type ContextUsage = {
+  model: string;
+  windowTokens: number;
+  windowKnown: boolean;
+  /** The conversation's share of the window; compaction keeps it under this. */
+  budgetTokens: number;
+  /** Estimated tokens of the summary plus messages since it. */
+  usedTokens: number;
+  messageCount: number;
+  summarized: boolean;
+  /** Real prompt size of the last answer's request, from OpenRouter. */
+  lastPromptTokens: number | null;
+};

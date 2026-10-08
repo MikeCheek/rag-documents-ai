@@ -11,23 +11,37 @@ type OpenRouterModelInfo = {
   name?: string;
   supported_parameters?: string[];
   pricing?: { prompt?: string; completion?: string };
+  context_length?: number;
 };
 
 let cache: { fetchedAt: number; models: OpenRouterModelInfo[] } | null = null;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — this data changes rarely
 
+let lastFailure: { at: number; error: Error } | null = null;
+const FAILURE_TTL_MS = 60 * 1000;
+
 async function fetchModels(): Promise<OpenRouterModelInfo[]> {
   if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
     return cache.models;
   }
+  // Also used when opening a chat (context window sizes): if OpenRouter
+  // is unreachable, fail fast for a minute instead of every caller
+  // waiting out its own timeout.
+  if (lastFailure && Date.now() - lastFailure.at < FAILURE_TTL_MS) throw lastFailure.error;
 
-  const res = await fetch("https://openrouter.ai/api/v1/models");
-  if (!res.ok) throw new Error(`OpenRouter models request failed: ${res.status}`);
-  const json = await res.json();
-  const models: OpenRouterModelInfo[] = json?.data ?? [];
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", { signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) throw new Error(`OpenRouter models request failed: ${res.status}`);
+    const json = await res.json();
+    const models: OpenRouterModelInfo[] = json?.data ?? [];
 
-  cache = { fetchedAt: Date.now(), models };
-  return models;
+    cache = { fetchedAt: Date.now(), models };
+    lastFailure = null;
+    return models;
+  } catch (err) {
+    lastFailure = { at: Date.now(), error: err instanceof Error ? err : new Error(String(err)) };
+    throw lastFailure.error;
+  }
 }
 
 function isFreeModel(model: OpenRouterModelInfo): boolean {
@@ -88,5 +102,20 @@ export async function checkModelToolSupport(modelId: string): Promise<ModelToolC
     return { modelId, isAutoRouter: false, supportsTools: ok, suggestions };
   } catch {
     return { modelId, isAutoRouter, supportsTools: null, suggestions: [] };
+  }
+}
+
+/**
+ * The model's context window in tokens, from OpenRouter's model list, or
+ * null when it isn't known (the openrouter/free auto-router, which picks a
+ * different model per request, or the list being unreachable).
+ */
+export async function getContextWindow(modelId: string): Promise<number | null> {
+  if (modelId === "openrouter/free") return null;
+  try {
+    const match = (await fetchModels()).find((m) => m.id === modelId);
+    return typeof match?.context_length === "number" && match.context_length > 0 ? match.context_length : null;
+  } catch {
+    return null;
   }
 }
