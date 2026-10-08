@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { isUuid } from "@/lib/utils";
 import { and, asc, eq } from "drizzle-orm";
 import { getDb, chatsTable, chatMessagesTable } from "@/db";
+import { getContextUsage } from "@/lib/rag/chats";
+import { getSettings } from "@/lib/rag/settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +42,10 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         updatedAt: chat.updatedAt,
       },
       messages,
+      // For the context gauge; a chat still loads if this can't be measured.
+      context: await getSettings()
+        .then((settings) => getContextUsage(params.id, settings.openrouterModel))
+        .catch(() => null),
     });
   } catch (err: any) {
     return NextResponse.json(

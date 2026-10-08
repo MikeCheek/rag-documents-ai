@@ -137,6 +137,7 @@ export const chatMessagesTable = pgTable(
     agentSteps: jsonb("agent_steps"), // AgentStep[] | null — agent mode only
     apiCallCount: integer("api_call_count"), // # of LLM (OpenRouter) calls made to produce this message
     durationMs: integer("duration_ms"), // total time taken to produce this message
+    promptTokens: integer("prompt_tokens"), // assistant: tokens sent in its (largest) request, as reported by OpenRouter
     // Editing the last user message never deletes anything — it deactivates
     // the old user+assistant pair (isActiveVersion: false) and inserts a
     // new one sharing the same editGroupId, so every past version stays in

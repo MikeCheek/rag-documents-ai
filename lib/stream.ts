@@ -12,6 +12,7 @@ export type StreamEvent =
   | { type: "usage"; apiCallCount: number; durationMs: number }
   | { type: "document"; document: unknown }
   | { type: "chat"; chat: unknown }
+  | { type: "context"; context: unknown }
   | { type: "done" }
   | { type: "error"; message: string };
 

@@ -51,6 +51,9 @@ alter table chat_messages add column if not exists citation_check jsonb;
 -- On user messages: the documents a "Search in" choice limited the
 -- question to, as [{ id, name }]; null = all documents.
 alter table chat_messages add column if not exists document_scope jsonb;
+-- On answers: tokens sent in the answer's (largest) request, as reported
+-- by OpenRouter; shown with the chat's context gauge.
+alter table chat_messages add column if not exists prompt_tokens integer;
 
 create index if not exists chat_messages_edit_group_id_index
   on chat_messages (edit_group_id);

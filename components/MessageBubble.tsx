@@ -12,7 +12,7 @@ import { ChartBlock } from "./rich/ChartBlock";
 import { MermaidDiagram } from "./rich/MermaidDiagram";
 import { CodeBlock } from "./rich/CodeBlock";
 import "highlight.js/styles/github-dark.css";
-import { AlertTriangle, Bot, BookOpen, Clock, Copy, Check, Pencil, ChevronLeft, ChevronRight, Library } from "lucide-react";
+import { AlertTriangle, Bot, BookOpen, Clock, Copy, Check, Pencil, ChevronLeft, ChevronRight, Library, Shrink } from "lucide-react";
 import type { ChatMessage, CitationCheck, Source } from "@/types";
 import { normalizeMathDelimiters } from "@/lib/markdown";
 import { PipelineStatus } from "./PipelineStatus";
@@ -122,6 +122,14 @@ function AgentStageLine({ stage, detail }: { stage: string; detail?: string }) {
       <p className="text-sm text-rust-400 font-mono flex items-center gap-1.5">
         <Clock size={12} className="animate-pulse" />
         {detail ?? "Waiting for rate limit..."}
+      </p>
+    );
+  }
+  if (stage === "compacting") {
+    return (
+      <p className="text-sm text-brass-300 font-mono flex items-center gap-1.5">
+        <Shrink size={12} className="animate-pulse" />
+        Compacting the conversation...
       </p>
     );
   }

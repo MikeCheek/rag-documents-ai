@@ -7,8 +7,9 @@ import { runAgentLoop } from "@/lib/agent/loop";
 import { getSettings } from "@/lib/rag/settings";
 import { createEventStream } from "@/lib/stream";
 import { incrementChunkUsage, logApiCall } from "@/lib/rag/usage";
-import { deriveTitle, loadChatContext } from "@/lib/rag/chats";
-import { maybeCompactChat } from "@/lib/rag/compaction";
+import { deriveTitle, getContextUsage, loadChatContext } from "@/lib/rag/chats";
+import { compactChat } from "@/lib/rag/compaction";
+import { contextLimitsFor, conversationTokens } from "@/lib/rag/context-budget";
 import { TimingCollector, persistTimings } from "@/lib/rag/timing";
 import { openrouterLimiter } from "@/lib/rag/rate-limiter";
 import type { ChatMode } from "@/types";
@@ -37,6 +38,16 @@ ${RICH_FORMATTING_GUIDE}`;
 
 export async function POST(req: NextRequest) {
   const { stream, send, close } = createEventStream();
+
+  // How full the chat's context is now, for the gauge under the prompt
+  // bar. Best-effort: never fails the turn it's reporting on.
+  async function sendContext(chatId: string, model: string) {
+    try {
+      send({ type: "context", context: await getContextUsage(chatId, model) });
+    } catch (err) {
+      console.error("Couldn't measure chat context:", err);
+    }
+  }
 
   (async () => {
     let chatId: string | undefined;
@@ -102,10 +113,31 @@ export async function POST(req: NextRequest) {
       }
 
       const activeChatId: string = chatId;
-      const { history, summary } = await loadChatContext(activeChatId);
+      let { history, summary } = await loadChatContext(activeChatId);
       const settings = await getSettings();
       const turnStartedAt = Date.now();
       const timing = new TimingCollector();
+
+      // The whole conversation since the last summary is sent with the
+      // question. If that wouldn't fit the model's context budget, fold
+      // older messages into the summary first (lib/rag/compaction.ts).
+      let compactionCalls = 0;
+      const limits = await contextLimitsFor(settings.openrouterModel);
+      if (conversationTokens(summary, history, query) > limits.budgetTokens) {
+        send({ type: "stage", stage: "compacting", detail: "the conversation is close to the model's context limit" });
+        try {
+          const result = await timing.time("compaction", () =>
+            compactChat(activeChatId, { pending: query, abortSignal: req.signal })
+          );
+          compactionCalls = result.llmCalls;
+          if (result.compacted) ({ history, summary } = await loadChatContext(activeChatId));
+        } catch (err) {
+          if (req.signal.aborted) throw err;
+          // Not fatal: the reserve left for passages and the answer usually
+          // still has room, and the next turn tries again.
+          console.error("Chat compaction failed:", err);
+        }
+      }
 
       await db.insert(chatMessagesTable).values({
         chatId: activeChatId,
@@ -122,7 +154,7 @@ export async function POST(req: NextRequest) {
       // a loop before producing a final answer. See lib/agent/loop.ts.
       // ---------------------------------------------------------------
       if (mode === "agent") {
-        const { finalContent, steps, sources, rerankMethod, llmCallCount } = await runAgentLoop(
+        const { finalContent, steps, sources, rerankMethod, llmCallCount: agentCalls, promptTokens } = await runAgentLoop(
           query,
           history,
           summary,
@@ -145,6 +177,7 @@ export async function POST(req: NextRequest) {
           { documentIds, abortSignal: req.signal }
         );
 
+        const llmCallCount = agentCalls + compactionCalls;
         const durationMs = Date.now() - turnStartedAt;
         timing.record("total", durationMs);
 
@@ -170,6 +203,7 @@ export async function POST(req: NextRequest) {
             rerankMethod: sources.length ? rerankMethod : null,
             apiCallCount: llmCallCount,
             durationMs,
+            promptTokens,
             editGroupId,
           })
           .returning();
@@ -182,8 +216,8 @@ export async function POST(req: NextRequest) {
         persistTimings(activeChatId, assistantMessage.id, "agent", timing.getAll());
 
         send({ type: "usage", apiCallCount: llmCallCount, durationMs });
+        await sendContext(activeChatId, settings.openrouterModel);
         send({ type: "done" });
-        maybeCompactChat(activeChatId);
         return;
       }
 
@@ -208,7 +242,8 @@ export async function POST(req: NextRequest) {
       // Deterministic from settings: the pipeline makes exactly one
       // optimize_query call when that mode is "llm", and the final answer
       // call only happens when there are sources to answer from.
-      let llmCallCount = settings.queryOptimization === "llm" ? 1 : 0;
+      let llmCallCount = compactionCalls + (settings.queryOptimization === "llm" ? 1 : 0);
+      let promptTokens: number | null = null;
 
       if (sources.length === 0) {
         answer =
@@ -249,7 +284,7 @@ export async function POST(req: NextRequest) {
                 temperature: 0.3,
                 messages: [
                   { role: "system", content: systemPrompt },
-                  ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+                  ...history.map((m) => ({ role: m.role, content: m.content })),
                   {
                     role: "user",
                     content: `<context>\n${context}\n</context>\n\nQuestion: ${query}`,
@@ -267,6 +302,7 @@ export async function POST(req: NextRequest) {
                 send({ type: "token", content: delta });
               }
               if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
+              if (chunk.usage?.prompt_tokens) promptTokens = chunk.usage.prompt_tokens;
             }
           } catch (err: any) {
             // A genuine failure (before or during the stream) should still
@@ -302,6 +338,7 @@ export async function POST(req: NextRequest) {
           rerankMethod,
           apiCallCount: llmCallCount,
           durationMs,
+          promptTokens,
           editGroupId,
         })
         .returning();
@@ -314,11 +351,8 @@ export async function POST(req: NextRequest) {
       persistTimings(activeChatId, assistantMessage.id, "rag", timing.getAll());
 
       send({ type: "usage", apiCallCount: llmCallCount, durationMs });
+      await sendContext(activeChatId, settings.openrouterModel);
       send({ type: "done" });
-
-      // Fire-and-forget: keeps future turns' context bounded once a chat
-      // gets long. Runs after the response is already sent.
-      maybeCompactChat(activeChatId);
     } catch (err: any) {
       const stopped = req.signal.aborted;
       // A stop that lands before either branch's own graceful-abort

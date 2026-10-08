@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowUp, BookOpen, Square } from "lucide-react";
 import { DocumentScopePicker } from "./DocumentScopePicker";
+import { ContextGauge } from "./ContextGauge";
 import type {
+  ContextUsage,
   AgentStep,
   ChatMessage,
   ChatSummary,
@@ -64,6 +66,7 @@ export function ChatView({
   const [isBusy, setIsBusy] = useState(false);
   // Documents the next questions are limited to; empty = all of them.
   const [scope, setScope] = useState<string[]>([]);
+  const [context, setContext] = useState<ContextUsage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [activeCitation, setActiveCitation] = useState<{
@@ -120,6 +123,7 @@ export function ChatView({
 
     if (!chatId) {
       setMessages([]);
+      setContext(null);
       // A new chat searches everything until told otherwise.
       setScope([]);
       return;
@@ -139,9 +143,10 @@ export function ChatView({
         }
         return res.json();
       })
-      .then((json: { messages?: StoredChatMessage[] }) => {
+      .then((json: { messages?: StoredChatMessage[]; context?: ContextUsage | null }) => {
         if (cancelled || !json.messages) return;
         setMessages(json.messages.map(storedToChatMessage));
+        setContext(json.context ?? null);
         // Reopening a chat restores the "Search in" choice its last
         // question used, so follow-ups stay in the same documents.
         const lastUser = [...json.messages].reverse().find((m) => m.role === "user");
@@ -296,6 +301,8 @@ export function ChatView({
             update({ content });
           } else if (event.type === "error") {
             update({ error: event.message, isStreaming: false });
+          } else if (event.type === "context") {
+            setContext(event.context as ContextUsage);
           } else if (event.type === "done") {
             update({ isStreaming: false });
           }
@@ -314,6 +321,20 @@ export function ChatView({
       setIsBusy(false);
       abortControllerRef.current = null;
       if (resolvedChatId) onChatTouched();
+    }
+  }
+
+  /** "Compact now" from the context gauge. Returns an error message, or null. */
+  async function compactNow(): Promise<string | null> {
+    if (!chatId) return null;
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/compact`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) return json?.error ?? "Compaction failed.";
+      if (json.context) setContext(json.context);
+      return json.compacted ? null : "Nothing to compact yet.";
+    } catch {
+      return "Compaction failed.";
     }
   }
 
@@ -515,18 +536,21 @@ export function ChatView({
               </button>
             )}
           </form>
-          <p className="max-w-[720px] mx-auto text-center text-[11px] text-paper-400 mt-2 leading-relaxed">
-            {mode === "agent" ? (
-              <>
-                AI-generated: it can make mistakes, so check anything important.
-              </>
-            ) : (
-              <>
-                AI-generated: it can make mistakes, so check anything important.
-                This is a RAG assistant, not an autonomous agent.
-              </>
-            )}
-          </p>
+          <div className="max-w-[720px] mx-auto mt-2 flex items-center gap-3">
+            <ContextGauge context={context} busy={isBusy} onCompact={compactNow} />
+            <p className="flex-1 text-center text-[11px] text-paper-400 leading-relaxed">
+              {mode === "agent" ? (
+                <>AI-generated: it can make mistakes, so check anything important.</>
+              ) : (
+                <>
+                  AI-generated: it can make mistakes, so check anything important.
+                  This is a RAG assistant, not an autonomous agent.
+                </>
+              )}
+            </p>
+            {/* Balances the gauge, so the note stays centered under the input. */}
+            <div className="w-14 shrink-0" aria-hidden />
+          </div>
         </div>
       </div>
 

@@ -45,8 +45,12 @@ models by default).
   edited message stay browsable.
 - **Voice**: dictate with offline Whisper running in the browser, and have
   answers read aloud.
-- **Long chats are compacted**: older messages are summarized for the model,
-  while the full history stays on screen.
+- **Context gauge**: a ring under the prompt bar shows how much of the
+  model's context window the conversation uses. Click it for the numbers,
+  including the real prompt size of the last request, and to **compact now**.
+- **Long chats are compacted automatically**: when the next question
+  wouldn't fit, older messages are summarized first. The model gets the
+  summary plus the recent messages, and the full history stays on screen.
 - Each answer shows its mode, number of LLM calls and time taken.
 
 ![A question limited to 3 documents with "Search in", answered by Agent mode](docs/screenshots/search-in.png)
@@ -294,8 +298,8 @@ With the default settings, a RAG answer costs **one OpenRouter call**:
 | Answer | 1 OpenRouter call | — |
 
 Agent mode makes one OpenRouter call per round of tool use, plus the final
-answer. Long chats make one extra call about every 24 messages, to compact
-the history. Calls are paced under each provider's per-minute limit, and the
+answer. Compacting a long chat takes one extra call, only when its context
+is full. Calls are paced under each provider's per-minute limit, and the
 Ledger shows exact counts.
 
 ## Security
